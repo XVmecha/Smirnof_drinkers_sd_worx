@@ -47,7 +47,6 @@ provenance: `sidecar`, `llm` or `missing`. Nothing is ever guessed.
 | `search.py` | chunking, BM25 (Lucene IDF), the two tools |
 | `agent.py` | provider interface, scripted fake, the loop, ref numbering for citations |
 | `app.py` | FastAPI `/ask` in the UI's contract, `/ingest`, `/health`, CLI |
-
 | `providers.py` | OpenAI-compatible adapter (Gemini, OpenAI, Ollama), provider selection, LLM metadata extractor |
 
 Swap point for retrieval: `search.Index` (vectors, hybrid). With a real provider, ingestion fills metadata fields
