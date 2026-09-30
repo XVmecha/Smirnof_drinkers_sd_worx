@@ -1,0 +1,98 @@
+# Placeholder Open WebUI deployment (https://docs.openwebui.com)
+# Hackathon mode: no login, no secret key to manage. .env is optional.
+services:
+  open-webui:
+    # Pinned so the whole team runs the same version; bump deliberately.
+    image: ghcr.io/open-webui/open-webui:${OPEN_WEBUI_VERSION:-v0.11.4}
+    container_name: open-webui
+    # Checks the voice config (falls back to browser voices if ElevenLabs
+    # isn't usable), then runs the image's normal start.sh.
+    command: ["python", "/app/hackathon/scripts/start.py"]
+    ports:
+      - "${OPEN_WEBUI_PORT:-3000}:8080"
+    volumes:
+      - open-webui:/app/backend/data
+      - ./functions:/app/hackathon/functions:ro
+      - ./scripts:/app/hackathon/scripts:ro
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    environment:
+      # Single-user mode: no login screen, no accounts. Only works on a fresh
+      # data volume (run `make reset` if you already made an admin).
+      WEBUI_AUTH: "False"
+      WEBUI_NAME: ${WEBUI_NAME:-Open WebUI}
+      # This file is the source of truth: env vars win over settings saved in
+      # the UI (Admin Settings changes are reset on restart).
+      ENABLE_PERSISTENT_CONFIG: "False"
+
+      # Answers come from the backend service below via functions/payroll_assistant.py.
+      # Set TRUST_API_URL= (empty) in .env to use the built-in mock data instead.
+      TRUST_API_URL: ${TRUST_API_URL-http://backend:8000/ask}
+      TRUST_API_TOKEN: ${TRUST_API_TOKEN:-}
+      DEFAULT_MODELS: ${DEFAULT_MODELS:-payroll_assistant.u-001}
+      # No direct model connections: the only models are the Payroll Assistant
+      # entries. Flip these on to also chat with Ollama/OpenAI models directly.
+      ENABLE_OLLAMA_API: ${ENABLE_OLLAMA_API:-False}
+      ENABLE_OPENAI_API: ${ENABLE_OPENAI_API:-False}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+
+      # Voice. TTS engine: "" (browser's built-in voices, no key), elevenlabs,
+      # openai, azure, mistral, transformers. See .env.example for ElevenLabs.
+      AUDIO_TTS_ENGINE: ${AUDIO_TTS_ENGINE:-}
+      AUDIO_TTS_API_KEY: ${AUDIO_TTS_API_KEY:-}
+      AUDIO_TTS_MODEL: ${AUDIO_TTS_MODEL:-tts-1}
+      AUDIO_TTS_VOICE: ${AUDIO_TTS_VOICE:-alloy}
+      ELEVENLABS_API_BASE_URL: ${ELEVENLABS_API_BASE_URL:-https://api.elevenlabs.io}
+      # Speech-to-text: "" runs Whisper locally in the container (CPU, no key).
+      AUDIO_STT_ENGINE: ${AUDIO_STT_ENGINE:-}
+      WHISPER_MODEL: ${WHISPER_MODEL:-base}
+      # Empty = auto-detect per clip. Set (en, nl, fr) if it guesses wrong.
+      WHISPER_LANGUAGE: ${WHISPER_LANGUAGE:-}
+
+      # Background model calls (titles, tags, follow-up suggestions). Off to
+      # keep responses fast on local models.
+      ENABLE_TITLE_GENERATION: "False"
+      ENABLE_TAGS_GENERATION: "False"
+      ENABLE_FOLLOW_UP_GENERATION: "False"
+
+      # UI features we don't need right now
+      ENABLE_COMMUNITY_SHARING: "False"
+      ENABLE_EVALUATION_ARENA_MODELS: "False"
+      ENABLE_MESSAGE_RATING: "False"
+      ENABLE_NOTES: "False"
+      ENABLE_VERSION_UPDATE_CHECK: "False"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  # FastAPI /ask: access check + BM25 search over ./data + Gemini/Groq. See backend/app/main.py.
+  backend:
+    build: ./backend
+    container_name: payroll-backend
+    # Localhost only: Open WebUI reaches it on the internal network.
+    ports:
+      - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
+    volumes:
+      - ./data:/data:ro
+      - ./backend/app:/srv/app:ro
+    # --reload picks up code edits in backend/app without a rebuild.
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    environment:
+      # Providers are tried in LLM_ORDER; within a provider, models are tried in order.
+      # Gemini is primary, Groq is the backup (see README "LLM providers").
+      LLM_ORDER: ${LLM_ORDER:-gemini,groq}
+      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-20}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.8-flash}
+      GEMINI_FALLBACK_MODELS: ${GEMINI_FALLBACK_MODELS:-gemini-flash-latest,gemini-3.5-flash,gemini-3.5-flash-lite,gemini-flash-lite-latest}
+      GEMINI_BASE_URL: ${GEMINI_BASE_URL:-https://generativelanguage.googleapis.com/v1beta/openai/}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GROQ_MODELS: ${GROQ_MODELS:-openai/gpt-oss-120b,qwen/qwen3.8-27b,openai/gpt-oss-20b}
+      TRUST_API_TOKEN: ${TRUST_API_TOKEN:-}
+      DATA_DIR: /data
+      TOP_K: ${TOP_K:-8}
+    restart: unless-stopped
+
+volumes:
+  open-webui:
