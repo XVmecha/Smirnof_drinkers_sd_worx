@@ -74,19 +74,25 @@ def _parse_arguments(raw: Any) -> dict[str, Any]:
 
 
 def provider_from_env() -> LLMProvider:
-    name = os.environ.get("LLM_PROVIDER", "fake").lower()
+    name = os.environ.get("LLM_PROVIDER", "groq").lower()
     if name == "fake":
         return ScriptedFakeProvider()
+    if name == "groq":
+        return OpenAICompatibleProvider("https://api.groq.com/openai/v1", os.environ.get("GROQ_API_KEY", ""),
+                                        os.environ.get("LLM_MODEL", "openai/gpt-oss-120b"))
     if name == "openai":
         return OpenAICompatibleProvider(os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
                                         os.environ.get("OPENAI_API_KEY", ""), os.environ.get("LLM_MODEL", "gpt-4o-mini"))
     if name == "gemini":
         return OpenAICompatibleProvider("https://generativelanguage.googleapis.com/v1beta/openai",
                                         os.environ.get("GEMINI_API_KEY", ""), os.environ.get("LLM_MODEL", "gemini-3.8-flash"))
+    if name == "groq":
+        return OpenAICompatibleProvider("https://api.groq.com/openai/v1", os.environ.get("GROQ_API_KEY", ""),
+                                        os.environ.get("LLM_MODEL", "openai/gpt-oss-120b"))
     if name == "ollama":
         base = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
         return OpenAICompatibleProvider(base if base.endswith("/v1") else base + "/v1", "ollama", os.environ.get("LLM_MODEL", "llama3.1"))
-    raise ValueError(f"Unknown LLM_PROVIDER {name!r}. Use fake, gemini, openai or ollama.")
+    raise ValueError(f"Unknown LLM_PROVIDER {name!r}. Use fake, gemini, groq, openai or ollama.")
 
 
 def extractor_for(provider: LLMProvider) -> Extractor:

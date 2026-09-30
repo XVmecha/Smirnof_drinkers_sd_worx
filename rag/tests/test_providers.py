@@ -6,7 +6,8 @@ from conftest import SequenceProvider
 from rag_core.agent import LLMResponse, Message, ToolCall
 from rag_core.ingest import ingest
 from rag_core.models import FIELDS
-from rag_core.providers import EXTRACT_TOOL, OpenAICompatibleProvider, llm_extractor
+from rag_core.agent import ScriptedFakeProvider
+from rag_core.providers import EXTRACT_TOOL, OpenAICompatibleProvider, llm_extractor, provider_from_env
 from rag_core.search import TOOLS
 
 
@@ -100,3 +101,14 @@ def test_ingest_calls_extractor_only_for_missing_fields_and_keeps_sidecar_preced
     ts = by_name["timesheet_rules.pdf"]
     assert ts.metadata.model_dump() == {"language": "en", "country": None, "department": "Time", "owner": "Time Team", "created_at": None, "updated_at": None}
     assert ts.provenance == {"language": "llm", "country": "missing", "department": "llm", "owner": "llm", "created_at": "missing", "updated_at": "missing"}
+
+
+def test_provider_selection_defaults_to_groq(monkeypatch):
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+    provider = provider_from_env()
+    assert isinstance(provider, OpenAICompatibleProvider) and provider.model == "openai/gpt-oss-120b"
+    assert str(provider._client.base_url).startswith("https://api.groq.com/openai/v1")
+    monkeypatch.setenv("LLM_PROVIDER", "fake")
+    assert isinstance(provider_from_env(), ScriptedFakeProvider)

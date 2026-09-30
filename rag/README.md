@@ -11,12 +11,14 @@ Requires [uv](https://docs.astral.sh/uv/). Python 3.11 is pinned in `.python-ver
 ```bash
 cd rag
 uv sync
-export DOCS_DIR=/path/to/pdfs        # default ./docs
-uv run rag ingest                    # idempotent: unchanged files are skipped
-uv run rag ask "What is the overtime cap?"
-uv run rag serve --port 8000         # POST /ask, POST /ingest, GET /health
-uv run pytest
+export DOCS_DIR=/path/to/pdfs                    # default ./docs
+uv run --env-file ../.env rag ingest             # .env holds GROQ_API_KEY; unchanged files are skipped
+uv run --env-file ../.env rag ask "What is the overtime cap?"
+uv run --env-file ../.env rag serve --port 8000  # POST /ask, POST /ingest, GET /health
+uv run pytest                                    # offline, uses the fake provider
 ```
+
+The model is Groq's `openai/gpt-oss-120b`. `LLM_PROVIDER=fake` runs everything offline with a scripted stand-in.
 
 Point Open WebUI at it with `TRUST_API_URL=http://host.docker.internal:8000/ask` in the repo's `.env`.
 
@@ -35,9 +37,9 @@ provenance: `sidecar`, `llm` or `missing`. Nothing is ever guessed.
 | `DOCS_DIR` | `./docs` | folder of PDFs |
 | `INDEX_PATH` | `./data/index.json` | persisted pages, metadata and content hashes |
 | `MAX_TOOL_CALLS` | `8` | hard cap per question, then a forced final answer |
-| `LLM_PROVIDER` | `fake` | `fake`, `gemini`, `openai` or `ollama` |
-| `LLM_MODEL` | per provider | `gemini-3.8-flash`, `gpt-4o-mini`, `llama3.1` |
-| `GEMINI_API_KEY`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OLLAMA_BASE_URL` | | credentials and endpoints per provider |
+| `LLM_PROVIDER` | `fake` | `fake`, `gemini`, `groq`, `openai` or `ollama` |
+| `LLM_MODEL` | per provider | `gemini-3.8-flash`, `openai/gpt-oss-120b`, `gpt-4o-mini`, `llama3.1` |
+| `GEMINI_API_KEY`, `GROQ_API_KEY`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OLLAMA_BASE_URL` | | credentials and endpoints per provider |
 
 ## Layout
 
@@ -47,7 +49,7 @@ provenance: `sidecar`, `llm` or `missing`. Nothing is ever guessed.
 | `search.py` | chunking, BM25 (Lucene IDF), the two tools |
 | `agent.py` | provider interface, scripted fake, the loop, ref numbering for citations |
 | `app.py` | FastAPI `/ask` in the UI's contract, `/ingest`, `/health`, CLI |
-| `providers.py` | OpenAI-compatible adapter (Gemini, OpenAI, Ollama), provider selection, LLM metadata extractor |
+| `providers.py` | OpenAI-compatible adapter (Gemini, Groq, OpenAI, Ollama), provider selection, LLM metadata extractor |
 
 Swap point for retrieval: `search.Index` (vectors, hybrid). With a real provider, ingestion fills metadata fields
 the sidecar lacks through one forced tool call per document; the fake provider leaves them null.
