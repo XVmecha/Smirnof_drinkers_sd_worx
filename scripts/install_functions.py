@@ -39,6 +39,8 @@ def docstring_field(source, key):
 
 def main():
     token = call("POST", "/auths/signin", body={"email": "admin@localhost", "password": "admin"})["token"]
+    # Look up existing ids from the list: GET /functions/id/{id} answers 401, not 404, for a missing id.
+    installed = {f["id"] for f in call("GET", "/functions/", token) or []}
 
     for path in sorted(FUNCTIONS_DIR.glob("*.py")):
         fid = path.stem
@@ -49,7 +51,7 @@ def main():
             "content": content,
             "meta": {"description": docstring_field(content, "description")},
         }
-        existing = call("GET", f"/functions/id/{fid}", token)
+        existing = fid in installed
         fn = call("POST", f"/functions/id/{fid}/update" if existing else "/functions/create", token, form)
         if not fn.get("is_active"):
             fn = call("POST", f"/functions/id/{fid}/toggle", token)
