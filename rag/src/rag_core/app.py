@@ -14,10 +14,11 @@ from typing import Any, Optional
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
-from .agent import LLMProvider, provider_from_env, run_agent
+from .agent import LLMProvider, run_agent
 from .config import Settings
 from .ingest import ingest, load_index
 from .models import IngestReport
+from .providers import extractor_for, provider_from_env
 from .search import Index
 
 log = logging.getLogger(__name__)
@@ -58,6 +59,7 @@ def to_source(doc: dict[str, Any]) -> Source:
 def create_app(settings: Settings | None = None, provider: LLMProvider | None = None) -> FastAPI:
     settings = settings or Settings.from_env()
     provider = provider or provider_from_env()
+    extractor = extractor_for(provider)
     docs = load_index(settings.index_path)
     state = {"index": Index(docs)}
     app = FastAPI(title="Trust-aware RAG core")
@@ -68,7 +70,7 @@ def create_app(settings: Settings | None = None, provider: LLMProvider | None = 
 
     @app.post("/ingest", response_model=IngestReport)
     def do_ingest() -> IngestReport:
-        report = ingest(settings, docs)
+        report = ingest(settings, docs, extractor)
         state["index"] = Index(docs)
         return report
 
@@ -96,13 +98,14 @@ def main(argv: list[str] | None = None) -> int:
 
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     settings = Settings.from_env()
+    provider = provider_from_env()
 
     if args.command == "ingest":
-        report = ingest(settings, load_index(settings.index_path))
+        report = ingest(settings, load_index(settings.index_path), extractor_for(provider))
         print(report.model_dump_json(indent=2))
         return 1 if report.errors else 0
     if args.command == "ask":
-        result = run_agent(args.question, Index(load_index(settings.index_path)), provider_from_env(), settings.max_tool_calls)
+        result = run_agent(args.question, Index(load_index(settings.index_path)), provider, settings.max_tool_calls)
         print(result.answer)
         if args.trace:
             print(json.dumps(result.trace, indent=2, ensure_ascii=False), file=sys.stderr)
@@ -110,5 +113,5 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "serve":
         import uvicorn
 
-        uvicorn.run(create_app(settings), host=args.host, port=args.port)
+        uvicorn.run(create_app(settings, provider), host=args.host, port=args.port)
     return 0

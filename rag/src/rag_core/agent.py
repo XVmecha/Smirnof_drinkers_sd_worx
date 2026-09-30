@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, Field
@@ -17,6 +16,7 @@ class ToolCall(BaseModel):
     id: str
     name: str
     arguments: dict[str, Any] = Field(default_factory=dict)
+    extra: dict[str, Any] = Field(default_factory=dict)  # provider-specific fields to echo back, e.g. Gemini's thought signature
 
 
 class Message(BaseModel):
@@ -140,9 +140,3 @@ class ScriptedFakeProvider:
             lines += ["", "Tool budget exhausted; answered with the results gathered so far."]
         return LLMResponse(content="\n".join(lines))
 
-
-def provider_from_env() -> LLMProvider:
-    name = os.environ.get("LLM_PROVIDER", "fake").lower()
-    if name == "fake":
-        return ScriptedFakeProvider()
-    raise ValueError(f"Unknown LLM_PROVIDER {name!r}. Only 'fake' exists until a provider is chosen.")

@@ -35,7 +35,9 @@ provenance: `sidecar`, `llm` or `missing`. Nothing is ever guessed.
 | `DOCS_DIR` | `./docs` | folder of PDFs |
 | `INDEX_PATH` | `./data/index.json` | persisted pages, metadata and content hashes |
 | `MAX_TOOL_CALLS` | `8` | hard cap per question, then a forced final answer |
-| `LLM_PROVIDER` | `fake` | only the scripted fake exists so far |
+| `LLM_PROVIDER` | `fake` | `fake`, `gemini`, `openai` or `ollama` |
+| `LLM_MODEL` | per provider | `gemini-3.8-flash`, `gpt-4o-mini`, `llama3.1` |
+| `GEMINI_API_KEY`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OLLAMA_BASE_URL` | | credentials and endpoints per provider |
 
 ## Layout
 
@@ -46,5 +48,7 @@ provenance: `sidecar`, `llm` or `missing`. Nothing is ever guessed.
 | `agent.py` | provider interface, scripted fake, the loop, ref numbering for citations |
 | `app.py` | FastAPI `/ask` in the UI's contract, `/ingest`, `/health`, CLI |
 
-Swap points: `search.Index` for another retrieval engine (vectors, hybrid), `agent.LLMProvider` for a real
-model, `ingest.Extractor` for LLM metadata extraction.
+| `providers.py` | OpenAI-compatible adapter (Gemini, OpenAI, Ollama), provider selection, LLM metadata extractor |
+
+Swap point for retrieval: `search.Index` (vectors, hybrid). With a real provider, ingestion fills metadata fields
+the sidecar lacks through one forced tool call per document; the fake provider leaves them null.
