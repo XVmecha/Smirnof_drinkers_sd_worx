@@ -1,4 +1,4 @@
-.PHONY: up down logs restart reset pull
+.PHONY: up down logs restart reset pull functions
 
 up:        ## start in the background
 	docker compose up -d
@@ -18,3 +18,6 @@ reset:     ## wipe all chats and settings, start fresh
 
 pull:      ## pull the image for the pinned version
 	docker compose pull
+
+functions: ## install/update functions/*.py into Open WebUI
+	docker compose exec open-webui python /app/hackathon/scripts/install_functions.py

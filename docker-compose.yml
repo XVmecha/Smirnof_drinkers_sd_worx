@@ -9,6 +9,8 @@ services:
       - "${OPEN_WEBUI_PORT:-3000}:8080"
     volumes:
       - open-webui:/app/backend/data
+      - ./functions:/app/hackathon/functions:ro
+      - ./scripts:/app/hackathon/scripts:ro
     extra_hosts:
       - host.docker.internal:host-gateway
     environment:
@@ -20,10 +22,29 @@ services:
       # the UI (Admin Settings changes are reset on restart).
       ENABLE_PERSISTENT_CONFIG: "False"
 
-      # Model backends
+      # Answers come from our FastAPI backend via functions/payroll_assistant.py.
+      # Empty TRUST_API_URL = the function uses built-in mock data.
+      TRUST_API_URL: ${TRUST_API_URL:-}
+      TRUST_API_TOKEN: ${TRUST_API_TOKEN:-}
+      DEFAULT_MODELS: ${DEFAULT_MODELS:-payroll_assistant.janssens}
+      # No direct model connections: the only models are the Payroll Assistant
+      # entries. Flip these on to also chat with Ollama/OpenAI models directly.
+      ENABLE_OLLAMA_API: ${ENABLE_OLLAMA_API:-False}
+      ENABLE_OPENAI_API: ${ENABLE_OPENAI_API:-False}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      DEFAULT_MODELS: ${DEFAULT_MODELS:-}
+
+      # Voice. TTS engine: "" (browser's built-in voices, no key), elevenlabs,
+      # openai, azure, mistral, transformers. See .env.example for ElevenLabs.
+      AUDIO_TTS_ENGINE: ${AUDIO_TTS_ENGINE:-}
+      AUDIO_TTS_API_KEY: ${AUDIO_TTS_API_KEY:-}
+      AUDIO_TTS_MODEL: ${AUDIO_TTS_MODEL:-tts-1}
+      AUDIO_TTS_VOICE: ${AUDIO_TTS_VOICE:-alloy}
+      # Speech-to-text: "" runs Whisper locally in the container (CPU, no key).
+      AUDIO_STT_ENGINE: ${AUDIO_STT_ENGINE:-}
+      WHISPER_MODEL: ${WHISPER_MODEL:-base}
+      # Empty = auto-detect per clip. Set (en, nl, fr) if it guesses wrong.
+      WHISPER_LANGUAGE: ${WHISPER_LANGUAGE:-}
 
       # Background model calls (titles, tags, follow-up suggestions). Off to
       # keep responses fast on local models.

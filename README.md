@@ -35,7 +35,46 @@ No `.env` is required. Copy `.env.example` to `.env` only to change the port, na
 
 If you already ran it with login enabled, wipe the data volume once so no-auth mode can start: `make reset`.
 
-## Connecting a model
+## Payroll Assistant + trust card
+
+`functions/payroll_assistant.py` is an Open WebUI *pipe* function. It adds one model per client to the dropdown ("Payroll Assistant · Brouwerij Janssens NV (BE)"), sends the question to our FastAPI backend, and shows the answer with a **trust card** underneath: main source, freshness, owner, country/client fit, conflicts side by side, excluded sources and who to ask.
+
+Install or update it after starting the stack (and after every edit to the file):
+
+```bash
+make up
+make functions
+```
+
+With `TRUST_API_URL` unset, it uses built-in mock data so the UI can be demoed before the backend exists. Point it at the backend in `.env`:
+
+```bash
+TRUST_API_URL=http://host.docker.internal:8000/ask
+```
+
+The request/response contract for the backend is at the top of `functions/payroll_assistant.py`. The trust score is computed from the source metadata with fixed rules (see `assess_source`), so every point on the card can be explained.
+
+## Voice
+
+Works out of the box with no keys:
+
+- **Speech-to-text** (mic button, voice call mode): Whisper runs locally in the container. The first use downloads the `base` model (~150 MB).
+- **Text-to-speech** (speaker icon under an answer, voice call mode): the browser's built-in voices.
+
+For better voices, use ElevenLabs. In `.env`:
+
+```bash
+AUDIO_TTS_ENGINE=elevenlabs
+AUDIO_TTS_API_KEY=<your ElevenLabs API key>
+AUDIO_TTS_MODEL=eleven_multilingual_v2
+AUDIO_TTS_VOICE=21m00Tcm4TlvDq8ikWAM   # voice ID, from the ElevenLabs Voices page
+```
+
+Then `make restart`. OpenAI, Azure and Mistral also work via `AUDIO_TTS_ENGINE`; see the [env reference](https://docs.openwebui.com/reference/env-configuration).
+
+The browser only allows the mic on `localhost` or HTTPS, so open the app via http://localhost:3000, not an IP address.
+
+## Connecting a model directly
 
 - **Ollama (recommended on a Mac):** install Ollama natively (`brew install ollama`, then `ollama serve` and `ollama pull llama3.2`). Running it natively uses the Mac GPU; inside Docker it would be CPU-only and slow. Open WebUI reaches it via `host.docker.internal:11434`.
 - **OpenAI-compatible API:** set `OPENAI_API_KEY` in `.env`, then `make restart`.
@@ -52,6 +91,7 @@ All options: https://docs.openwebui.com/reference/env-configuration
 make up        # start
 make logs      # follow logs
 make restart   # apply config changes
+make functions # install/update functions/*.py
 make down      # stop (data volume is kept)
 make reset     # wipe chats/settings and start fresh
 ```
