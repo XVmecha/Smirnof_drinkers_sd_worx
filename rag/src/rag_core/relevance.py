@@ -45,6 +45,7 @@ attributes. The flags attribute is computed by the system and states facts:
   overridden_by:<id>   a client rule replaces this rule for that client's entity
   owner_left | owner_moved | no_owner
   draft | informal
+  stale                last update more than 2 years before the current date
 
 PRECEDENCE (for information): legal -> sector -> provider -> client.
 A more specific layer normally overrides a more general one, but a client
@@ -71,8 +72,7 @@ NOTABLE PASSAGE (max 2 sentences, most important point first)
 Mention what matters most for this question:
 - Relationships: supersedes, superseded by, overrides, overridden by.
 - Mismatch with the context (other country, other entity).
-- Trust gaps: owner left/moved/none, draft, informal, or last update more than
-  2 years before the current date.
+- Trust gaps: owner left/moved/none, draft, informal, stale.
 - What the document states on the question's point, especially if it differs
   from another listed document; give both with ids
   (e.g. "States 125%; this matches the superseded BE-TIME-002.").
@@ -138,6 +138,7 @@ Output:
 
 PLACEHOLDER = re.compile(r"\{(CURRENT_DATE|CLIENT|CONTEXT|HISTORY|QUESTION|DOCUMENTS|OTHER_COUNTRY)\}")
 GENERAL_COUNTRIES = {"ALL"}
+GENERAL_DOMAINS = {"Client"}  # client profiles and handover notes stay as background for any domain
 
 
 def fill(values: dict[str, str]) -> str:
@@ -151,21 +152,32 @@ def build_prompt(catalog: list[dict[str, Any]], consultant: dict[str, Any] | Non
                  today: date | None = None) -> str:
     """The full prompt text for one question. Raises `catalog.AccessDenied` before anything is read.
 
+    Every choice here is made by code from the catalog, so the same question gives the same documents and flags:
+    - scope: general documents plus the selected client's own (access);
+    - domain: when the context names one, only that domain plus client background documents are shown;
+    - split: documents for another country or another entity than the context names go to the second list.
     `candidates` narrows the documents shown (for example to search hits); ids outside the scope are ignored.
     Flags are computed over the whole scope, so a shown document can still point to one that was not selected.
     """
+    today = today or date.today()
+    context = context or {}
     in_scope = scope(catalog, consultant, client_id)
-    flags = compute_flags(in_scope)
-    shown = [d for d in in_scope if candidates is None or d["id"] in candidates]
-    country = ((context or {}).get("country") or "").upper()
+    flags = compute_flags(in_scope, today)
+    domain = (context.get("domain") or "").lower()
+    country = (context.get("country") or "").upper()
+    entity = (context.get("entity") or "").lower()
+    shown = [d for d in in_scope
+             if (candidates is None or d["id"] in candidates)
+             and (not domain or d.get("domain", "").lower() == domain or d.get("domain") in GENERAL_DOMAINS)]
     main, other = [], []
     for doc in shown:
-        is_other = country and doc.get("country") not in GENERAL_COUNTRIES | {country}
-        (other if is_other else main).append(document_tag(doc, flags[doc["id"]], texts.get(doc["id"], "")))
+        other_country = country and doc.get("country") not in GENERAL_COUNTRIES | {country}
+        other_entity = entity and doc.get("entity") and doc["entity"].lower() != entity
+        (other if other_country or other_entity else main).append(document_tag(doc, flags[doc["id"]], texts.get(doc["id"], "")))
     return fill({
-        "CURRENT_DATE": (today or date.today()).isoformat(),
+        "CURRENT_DATE": today.isoformat(),
         "CLIENT": f"{client_id} {client_label}".strip(),
-        "CONTEXT": json.dumps(context or {}, ensure_ascii=False),
+        "CONTEXT": json.dumps(context, ensure_ascii=False),
         "HISTORY": json.dumps(history or [], ensure_ascii=False),
         "QUESTION": question,
         "DOCUMENTS": "\n" + "\n".join(main) if main else "none",

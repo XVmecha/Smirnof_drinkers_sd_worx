@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import html
 import json
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,7 @@ TAG_FIELDS = ("id", "title", "layer", "country", "domain", "client_id", "entity"
               "source_type", "version", "status", "owner", "last_updated")
 OWNER_FLAGS = {"left": "owner_left", "moved_team": "owner_moved", "none": "no_owner"}
 STATUS_FLAGS = ("draft", "informal")
+STALE_AFTER_YEARS = 2
 CLIENTS_DIR = "clients/"
 
 
@@ -59,8 +61,19 @@ def scope(catalog: list[dict[str, Any]], consultant: dict[str, Any] | None, clie
     return kept
 
 
-def compute_flags(documents: list[dict[str, Any]]) -> dict[str, list[str]]:
-    """Flags per document id, from links inside `documents` only. A link to a document outside it is dropped."""
+def years_before(today: date, years: int) -> date:
+    try:
+        return today.replace(year=today.year - years)
+    except ValueError:  # 29 February
+        return today.replace(year=today.year - years, day=28)
+
+
+def compute_flags(documents: list[dict[str, Any]], today: date) -> dict[str, list[str]]:
+    """Flags per document id, from links inside `documents` only. A link to a document outside it is dropped.
+
+    `stale` marks a last update more than STALE_AFTER_YEARS before `today`, so the model never does date arithmetic.
+    """
+    cutoff = years_before(today, STALE_AFTER_YEARS).isoformat()
     ids = {d["id"] for d in documents}
     flags: dict[str, list[str]] = {d["id"]: [] for d in documents}
     for doc in documents:
@@ -74,6 +87,8 @@ def compute_flags(documents: list[dict[str, Any]]) -> dict[str, list[str]]:
             flags[doc["id"]].append(flag)
         if doc.get("status") in STATUS_FLAGS:
             flags[doc["id"]].append(doc["status"])
+        if doc.get("last_updated") and str(doc["last_updated"])[:10] < cutoff:
+            flags[doc["id"]].append("stale")
     return flags
 
 

@@ -1,6 +1,8 @@
 # rag-core target design
 
 rag-core stops being a question-answering agent and becomes a pipeline that prepares documents for one model call.
+The code decides which documents the model sees and which facts are attached to each; the model only describes
+them. The same question gives the same documents and the same flags every time.
 The model does not answer the consultant's question. It ranks the documents in scope, says what stands out in each,
 and gives a short spoken summary. The prompt that defines this is `PROMPT` in `src/rag_core/relevance.py`; it leads,
 and everything below exists to feed it.
@@ -25,11 +27,13 @@ with per-field provenance). Catalog field names win: `domain`, not `department`;
    from `client_id` or from its `clients/<client_id>_<slug>/` folder is left out.
 3. **Flags** (`catalog.compute_flags`). Computed from the scope only: `supersedes` and `overrides` as stored, their
    reverses `superseded_by` and `overridden_by`, `owner_left`, `owner_moved` and `no_owner` from `owner_status`,
-   `draft` and `informal` from `status`. A link whose target is outside the scope is dropped.
-4. **Candidates.** The documents shown to the model, a subset of the scope. Flags stay computed over the whole
+   `draft` and `informal` from `status`, and `stale` when `last_updated` is more than 2 years before the
+   current date, so the model never does date arithmetic. A link whose target is outside the scope is dropped.
+4. **Candidates.** The documents shown to the model, a subset of the scope. When the context names a domain,
+   only documents of that domain are shown, plus the client's profile and handover notes (domain `Client`). Flags stay computed over the whole
    scope, so a shown document can point to one that was not selected; the prompt tells the model to say so.
-5. **Split by country.** When the context names a country, documents for another country (not `ALL`) go to the
-   other-country list.
+5. **Split by country and entity.** Documents for another country (not `ALL`) than the context names, or client
+   documents for another entity than the context names, go to the second list.
 6. **Tags** (`catalog.document_tag`). Attributes come from the allowlist `TAG_FIELDS`; `path`, `topics`,
    `owner_status` and any evaluation label never reach the model. Attribute values and document text are
    HTML-escaped, so document text cannot close its tag.
