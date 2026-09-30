@@ -1,7 +1,9 @@
 # Placeholder Open WebUI deployment (https://docs.openwebui.com)
+# Hackathon mode: no login, no secret key to manage. .env is optional.
 services:
   open-webui:
-    image: ghcr.io/open-webui/open-webui:main
+    # Pinned so the whole team runs the same version; bump deliberately.
+    image: ghcr.io/open-webui/open-webui:${OPEN_WEBUI_VERSION:-v0.11.4}
     container_name: open-webui
     ports:
       - "${OPEN_WEBUI_PORT:-3000}:8080"
@@ -9,8 +11,32 @@ services:
       - open-webui:/app/backend/data
     extra_hosts:
       - host.docker.internal:host-gateway
-    env_file:
-      - .env
+    environment:
+      # Single-user mode: no login screen, no accounts. Only works on a fresh
+      # data volume (run `make reset` if you already made an admin).
+      WEBUI_AUTH: "False"
+      WEBUI_NAME: ${WEBUI_NAME:-Open WebUI}
+      # This file is the source of truth: env vars win over settings saved in
+      # the UI (Admin Settings changes are reset on restart).
+      ENABLE_PERSISTENT_CONFIG: "False"
+
+      # Model backends
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      DEFAULT_MODELS: ${DEFAULT_MODELS:-}
+
+      # Background model calls (titles, tags, follow-up suggestions). Off to
+      # keep responses fast on local models.
+      ENABLE_TITLE_GENERATION: "False"
+      ENABLE_TAGS_GENERATION: "False"
+      ENABLE_FOLLOW_UP_GENERATION: "False"
+
+      # UI features we don't need right now
+      ENABLE_COMMUNITY_SHARING: "False"
+      ENABLE_EVALUATION_ARENA_MODELS: "False"
+      ENABLE_MESSAGE_RATING: "False"
+      ENABLE_NOTES: "False"
+      ENABLE_VERSION_UPDATE_CHECK: "False"
     restart: unless-stopped
 
 volumes:
