@@ -119,7 +119,7 @@ flowchart LR
 
 ## The knowledge base
 
-Organised the way payroll providers separate knowledge. `catalog.json` is the only metadata source; its values are shown to the consultant exactly as stored.
+Organised the way payroll providers separate knowledge. `catalog.json` is the only source of document metadata; its values are shown to the consultant exactly as stored. Client names, entities and sites are read from the client profile PDFs, and experts from the expert directory PDF.
 
 ```
 data/
@@ -140,7 +140,7 @@ data/
 └── shared/               expert directory
 ```
 
-18 fictional PDFs with **deliberate traps**: an outdated version, an owner who left, a wrong-country rule, two FAQs that disagree, a draft with no owner, and a hidden instruction aimed at the AI. Regenerate with `python scripts/build_data.py`; `make docs-push` / `make docs-pull` sync `data/` with a Google Cloud Storage bucket.
+18 fictional PDFs with **deliberate traps**: an outdated version, an owner who left, a wrong-country rule, two FAQs that disagree, a draft with no owner, and a hidden instruction aimed at the AI. Regenerate with `pip install reportlab && python scripts/build_data.py`; `make docs-push` / `make docs-pull` sync `data/` with a Google Cloud Storage bucket.
 
 ---
 
@@ -185,7 +185,7 @@ data/
 | 2 | Emma | Same question for the Breda site | Dutch entity's agreement (150%) in scope, via chat history |
 | 3 | Emma | Meal voucher value in Belgium? | Current policy and the older FAQ (*older than 2 years*) with conflicting amounts; injected note under *Suspicious* |
 | 4 | Emma | Home-working allowance in Belgium? | Only a *draft* with *no owner* |
-| 5 | Emma | Company car taxation in Belgium? | **Not found** – no guessing, names an expert |
+| 5 | Emma | Company car taxation in Belgium? | **Not found** – no guessing; points to the Knowledge Team, since the directory has no named expert for it |
 | 6 | Emma | "What's the Saturday overtime rate?" | **Clarify** – which client and country |
 | 7 | Emma | Havenlink Logistics Saturday overtime? | **Denied** – nothing searched, AI never called |
 | 8 | Lucas | Havenlink Logistics Saturday overtime? | Havenlink agreement (160%) ranked first |
@@ -206,7 +206,7 @@ make up                   # starts Open WebUI + backend
 make functions            # installs the Payroll Assistant into Open WebUI
 ```
 
-Open http://localhost:3000 and pick the Payroll Assistant for **Emma Wouters** or **Lucas Verbeke**.
+Open http://localhost:3000 and pick the Payroll Assistant for **Emma Wouters** or **Lucas Verbeke**. If port 3000 is taken, start with another one, e.g. `OPEN_WEBUI_PORT=3100 make up`.
 
 | Setting | Default |
 |---|---|
