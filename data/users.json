@@ -1,0 +1,27 @@
+{
+  "note": "Fictional demo users. Identity must come from login/session, never from the question text.",
+  "consultants": [
+    {
+      "id": "U-001",
+      "name": "Emma Wouters",
+      "role": "payroll_consultant",
+      "clients": [
+        "CL-10045"
+      ]
+    },
+    {
+      "id": "U-002",
+      "name": "Lucas Verbeke",
+      "role": "payroll_consultant",
+      "clients": [
+        "CL-20318"
+      ]
+    }
+  ],
+  "access_rules": {
+    "knowledge/": "all consultants",
+    "shared/": "all consultants",
+    "informal/": "all consultants (low trust)",
+    "clients/<client_id>_*/": "only consultants with that client_id in their clients list"
+  }
+}

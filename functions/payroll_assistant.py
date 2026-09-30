@@ -4,17 +4,20 @@ description: Sends the question to our FastAPI backend and shows the answer with
 version: 0.1.0
 """
 
-# Open WebUI "pipe" function. Each client in CLIENTS shows up as its own model
-# in the model dropdown, so picking a model = picking the client you work for.
+# Open WebUI "pipe" function. Each consultant in CONSULTANTS (data/users.json)
+# shows up as its own model in the dropdown: picking a model = who is logged in.
+# The client is detected by the backend from the question, and access is checked there.
 #
 # Backend contract (POST {TRUST_API_URL}):
-#   request:  {"question": str, "client": {"id","name","country","joint_committee"},
-#              "messages": [{"role","content"}, ...]}
-#   response: {"answer": str (markdown, cite sources as [1], [2] in `sources` order),
-#              "sources": [{"id","title","doc_type","country","joint_committees",
-#                           "owner","expert","updated","superseded_by","url","excerpt"}],
-#              "conflicts": [{"a": source id, "b": source id, "topic",
-#                             "a_says", "b_says"}],
+#   request:  {"question": str, "consultant_id": str, "messages": [{"role","content"}, ...]}
+#   response: {"status": "answered" | "clarify" | "denied" | "not_found",
+#              "answer": str (markdown, cites sources as [1], [2] in `sources` order),
+#              "sources": [{"id","title","doc_type","layer","country","entity","owner",
+#                           "owner_status","updated","superseded_by","overrides",
+#                           "excerpt","exclude_reasons"}],
+#              "conflicts": [{"a": source id, "b": source id, "topic", "a_says", "b_says"}],
+#              "context": {"consultant","client","client_id","entity","country","sector"},
+#              "expert": str, "model": str,
 #              "confidence": optional int 0-100, overrides the computed score}
 # Leave TRUST_API_URL empty to use the built-in mock response (for UI work).
 
@@ -27,13 +30,15 @@ from typing import Optional
 import aiohttp
 from pydantic import BaseModel, Field
 
-DEFAULT_CLIENTS = [
-    {"id": "janssens", "name": "Brouwerij Janssens NV", "country": "BE", "joint_committee": "118"},
-    {"id": "devries", "name": "De Vries Logistiek BV", "country": "NL", "joint_committee": ""},
-    {"id": "peeters", "name": "Peeters Retail BV", "country": "BE", "joint_committee": "201"},
+# Mirrors data/users.json.
+DEFAULT_CONSULTANTS = [
+    {"id": "U-001", "name": "Emma Wouters"},
+    {"id": "U-002", "name": "Lucas Verbeke"},
 ]
 
-OFFICIAL_TYPES = {"policy", "annex", "regulation", "procedure", "directory"}
+# Most specific wins (README "Precedence"): used to pick the main source on a tie.
+LAYER_RANK = {"informal": 0, "legal": 1, "sector": 2, "provider": 3, "client": 4}
+OFFICIAL_TYPES = {"policy", "agreement", "annex", "regulation", "procedure", "profile", "handover", "directory"}
 INFORMAL_TYPES = {"chat", "email", "note"}
 UNREVIEWED_TYPES = {"draft", "faq"}
 
@@ -54,10 +59,10 @@ class Pipe:
         )
         TIMEOUT_SECONDS: int = 60
         STALE_AFTER_DAYS: int = 365
-        FALLBACK_EXPERT: str = "Payroll Knowledge Desk"
-        CLIENTS: str = Field(
-            default=json.dumps(DEFAULT_CLIENTS),
-            description="JSON list of clients; each becomes a model in the dropdown.",
+        FALLBACK_EXPERT: str = "Knowledge Team"
+        CONSULTANTS: str = Field(
+            default=json.dumps(DEFAULT_CONSULTANTS),
+            description="JSON list of consultants (data/users.json); each becomes a model in the dropdown.",
         )
 
     def __init__(self):
@@ -66,13 +71,10 @@ class Pipe:
     # ---- Open WebUI hooks -------------------------------------------------
 
     def pipes(self):
-        return [
-            {"id": c["id"], "name": f"Payroll Assistant · {c['name']} ({c['country']})"}
-            for c in self._clients()
-        ]
+        return [{"id": c["id"].lower(), "name": f"Payroll Assistant · {c['name']}"} for c in self._consultants()]
 
     async def pipe(self, body: dict, __event_emitter__=None) -> str:
-        client = self._client_for_model(body.get("model", ""))
+        consultant = self._consultant_for_model(body.get("model", ""))
         messages = [
             {"role": m.get("role"), "content": _text(m.get("content"))}
             for m in body.get("messages", [])
@@ -83,15 +85,20 @@ class Pipe:
         await _emit(__event_emitter__, "status", {"description": "Checking sources…", "done": False})
         try:
             if self.valves.TRUST_API_URL:
-                data = await self._call_backend(question, client, messages)
+                data = await self._call_backend(question, consultant, messages)
             else:
-                data = _mock_response(client)
+                data = _mock_response(consultant)
         except BackendError as e:
             await _emit(__event_emitter__, "status", {"description": "Backend error", "done": True})
             return f"⚠️ The knowledge backend returned an error: {e}"
         except Exception as e:
             await _emit(__event_emitter__, "status", {"description": "Backend unreachable", "done": True})
             return f"⚠️ Could not reach the knowledge backend: `{type(e).__name__}`. Is the FastAPI service running?"
+
+        status = data.get("status", "answered")
+        if status == "clarify":  # just a question back, nothing to vouch for
+            await _emit(__event_emitter__, "status", {"description": "Need more context", "done": True})
+            return data.get("answer") or "Which client is this about?"
 
         sources = data.get("sources") or []
         for s in sources:
@@ -105,27 +112,30 @@ class Pipe:
                 },
             )
 
-        card = build_trust_card(data, client, self.valves.STALE_AFTER_DAYS, self.valves.FALLBACK_EXPERT)
+        if status == "denied":
+            card = build_denied_card(data, consultant)
+        else:
+            card = build_trust_card(data, consultant, self.valves.STALE_AFTER_DAYS, self.valves.FALLBACK_EXPERT)
         await _emit(__event_emitter__, "embeds", {"embeds": [card]})
         await _emit(__event_emitter__, "status", {"description": "Sources checked", "done": True})
         return data.get("answer") or "No answer returned."
 
     # ---- helpers ----------------------------------------------------------
 
-    def _clients(self) -> list[dict]:
+    def _consultants(self) -> list[dict]:
         try:
-            clients = json.loads(self.valves.CLIENTS)
-            if isinstance(clients, list) and all("id" in c for c in clients):
-                return clients
+            consultants = json.loads(self.valves.CONSULTANTS)
+            if isinstance(consultants, list) and all("id" in c and "name" in c for c in consultants):
+                return consultants
         except (ValueError, TypeError):
             pass
-        return DEFAULT_CLIENTS
+        return DEFAULT_CONSULTANTS
 
-    def _client_for_model(self, model_id: str) -> dict:
+    def _consultant_for_model(self, model_id: str) -> dict:
         sub_id = model_id.split(".", 1)[1] if "." in model_id else ""
-        return next((c for c in self._clients() if c["id"] == sub_id), self._clients()[0])
+        return next((c for c in self._consultants() if c["id"].lower() == sub_id.lower()), self._consultants()[0])
 
-    async def _call_backend(self, question: str, client: dict, messages: list) -> dict:
+    async def _call_backend(self, question: str, consultant: dict, messages: list) -> dict:
         headers = {"Content-Type": "application/json"}
         if self.valves.TRUST_API_TOKEN:
             headers["Authorization"] = f"Bearer {self.valves.TRUST_API_TOKEN}"
@@ -133,7 +143,7 @@ class Pipe:
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(
                 self.valves.TRUST_API_URL,
-                json={"question": question, "client": client, "messages": messages},
+                json={"question": question, "consultant_id": consultant["id"], "messages": messages},
                 headers=headers,
             ) as resp:
                 if resp.status >= 400:
@@ -148,29 +158,27 @@ class Pipe:
 # ---- trust rules (deterministic, so the card is explainable) --------------
 
 
-def assess_source(s: dict, client: dict, stale_after_days: int) -> dict:
+def assess_source(s: dict, ctx: dict, stale_after_days: int) -> dict:
     """Return {'excluded': [reasons], 'checks': [(label, ok, detail)], 'penalties': [(points, why)], 'score'}."""
-    excluded, checks, penalties = [], [], []
+    excluded, checks, penalties = list(s.get("exclude_reasons") or []), [], []
 
     if s.get("superseded_by"):
         excluded.append(f"Replaced by {s['superseded_by']}")
 
     doc_country = (s.get("country") or "").upper()
-    client_country = (client.get("country") or "").upper()
-    if doc_country and doc_country not in ("ALL", "EU") and client_country and doc_country != client_country:
-        excluded.append(f"Wrong country ({doc_country}, client is {client_country})")
+    country = (ctx.get("country") or "").upper()
+    if doc_country and doc_country not in ("ALL", "EU") and country and doc_country != country:
+        excluded.append(f"Wrong country ({doc_country}, question is about {country})")
     elif doc_country:
-        checks.append(("Country", True, doc_country if doc_country not in ("ALL", "EU") else f"{doc_country} countries"))
+        checks.append(("Country", True, doc_country if doc_country not in ("ALL", "EU") else "all countries"))
     else:
         checks.append(("Country", None, "not stated"))
         penalties.append((10, "country not stated"))
 
-    jcs = _as_list(s.get("joint_committees"))
-    client_jc = client.get("joint_committee") or ""
-    if jcs and "ALL" not in [j.upper() for j in jcs] and client_jc and client_jc not in jcs:
-        excluded.append(f"Not for joint committee {client_jc} (covers {', '.join(jcs)})")
-    elif jcs and client_jc:
-        checks.append(("Client scope", True, f"JC {client_jc}"))
+    if s.get("entity"):
+        checks.append(("Applies to", True, f"{s['entity']} only"))
+    if s.get("overrides"):
+        checks.append(("Overrides", True, s["overrides"]))
 
     updated = _parse_date(s.get("updated"))
     if updated is None:
@@ -183,11 +191,18 @@ def assess_source(s: dict, client: dict, stale_after_days: int) -> dict:
         if stale:
             penalties.append((30, f"older than {stale_after_days} days"))
 
-    if s.get("owner"):
-        checks.append(("Owner", True, s["owner"]))
-    else:
+    owner_status = (s.get("owner_status") or "").lower()
+    if not s.get("owner") or owner_status == "none":
         checks.append(("Owner", False, "no owner"))
         penalties.append((20, "no owner"))
+    elif owner_status == "left":
+        checks.append(("Owner", False, f"{s['owner']} (left the company)"))
+        penalties.append((20, "owner left"))
+    elif owner_status == "moved_team":
+        checks.append(("Owner", None, f"{s['owner']} (moved team)"))
+        penalties.append((10, "owner moved team"))
+    else:
+        checks.append(("Owner", True, s["owner"]))
 
     doc_type = (s.get("doc_type") or "").lower()
     if doc_type in INFORMAL_TYPES:
@@ -205,11 +220,12 @@ def assess_source(s: dict, client: dict, stale_after_days: int) -> dict:
     return {"excluded": excluded, "checks": checks, "penalties": penalties, "score": score}
 
 
-def build_trust_card(data: dict, client: dict, stale_after_days: int, fallback_expert: str) -> str:
+def build_trust_card(data: dict, consultant: dict, stale_after_days: int, fallback_expert: str) -> str:
+    ctx = data.get("context") or {}
     sources = data.get("sources") or []
     by_id = {}
     for i, s in enumerate(sources, start=1):
-        s = {**s, "_n": i, "_a": assess_source(s, client, stale_after_days)}
+        s = {**s, "_n": i, "_a": assess_source(s, ctx, stale_after_days)}
         by_id[str(s.get("id") or i)] = s
     considered = [s for s in by_id.values() if not s["_a"]["excluded"]]
     excluded = [s for s in by_id.values() if s["_a"]["excluded"]]
@@ -217,7 +233,8 @@ def build_trust_card(data: dict, client: dict, stale_after_days: int, fallback_e
     applicable = {k for k, s in by_id.items() if not s["_a"]["excluded"]}
     conflicts = [c for c in (data.get("conflicts") or []) if str(c.get("a")) in applicable and str(c.get("b")) in applicable]
 
-    best = max(considered, key=lambda s: s["_a"]["score"], default=None)
+    # Highest trust wins; on a tie the most specific layer (client > provider > sector > legal).
+    best = max(considered, key=lambda s: (s["_a"]["score"], LAYER_RANK.get(s.get("layer"), 0)), default=None)
     reasons = []
     if best is None:
         confidence = 0
@@ -226,18 +243,26 @@ def build_trust_card(data: dict, client: dict, stale_after_days: int, fallback_e
         confidence = best["_a"]["score"]
         reasons += [f"−{p} {why}" for p, why in best["_a"]["penalties"]]
         best_id = str(best.get("id") or best["_n"])
-        if any(best_id in (str(c.get("a")), str(c.get("b"))) for c in conflicts):
-            confidence = max(0, confidence - 30)
-            reasons.append("−30 another source disagrees")
+        rivals = [by_id[str(c["b"] if str(c.get("a")) == best_id else c["a"])]
+                  for c in conflicts if best_id in (str(c.get("a")), str(c.get("b")))]
+        if rivals:
+            # A much weaker source (e.g. a chat message) disagreeing costs less than a comparable one.
+            strongest = max(r["_a"]["score"] for r in rivals)
+            if best["_a"]["score"] - strongest >= 30:
+                confidence = max(0, confidence - 10)
+                reasons.append("−10 a less reliable source disagrees")
+            else:
+                confidence = max(0, confidence - 30)
+                reasons.append("−30 another reliable source disagrees")
     if isinstance(data.get("confidence"), (int, float)):
         confidence = int(data["confidence"])
 
     level = "high" if confidence >= 75 else "medium" if confidence >= 50 else "low"
     e = html.escape
 
-    parts = [f"<div class='card'><div class='head'><div><div class='k'>Trust card</div>"
-             f"<div class='client'>{e(client.get('name', ''))} · {e(client.get('country', ''))}"
-             f"{' · JC ' + e(client['joint_committee']) if client.get('joint_committee') else ''}</div></div>"
+    scope = " · ".join(filter(None, [ctx.get("entity") or ctx.get("client"), ctx.get("country"), ctx.get("sector")]))
+    parts = [f"<div class='card'><div class='head'><div><div class='k'>Trust card · {e(consultant.get('name', ''))}</div>"
+             f"<div class='client'>{e(scope or 'General question')}</div></div>"
              f"<div class='badge {level}'>{level.upper()} · {confidence}/100</div></div>"]
     if reasons:
         parts.append(f"<div class='why'>{e(' · '.join(reasons))}</div>")
@@ -271,7 +296,7 @@ def build_trust_card(data: dict, client: dict, stale_after_days: int, fallback_e
         parts.append(f"<details class='sec' open><summary class='k'>Found but excluded ({len(excluded)})</summary><ul>{rows}</ul></details>")
 
     if level != "high" or conflicts:
-        expert = (best or {}).get("expert") or (best or {}).get("owner") or fallback_expert
+        expert = data.get("expert") or fallback_expert
         parts.append(f"<div class='sec ask'><div class='k'>Not sure? Ask</div><div>🙋 {e(expert)}</div></div>")
 
     if data.get("model"):
@@ -279,6 +304,16 @@ def build_trust_card(data: dict, client: dict, stale_after_days: int, fallback_e
 
     parts.append("</div>")
     return _page("".join(parts))
+
+
+def build_denied_card(data: dict, consultant: dict) -> str:
+    e = html.escape
+    return _page(
+        f"<div class='card'><div class='head'><div><div class='k'>Access check · {e(consultant.get('name', ''))}</div>"
+        f"<div class='client'>Not assigned to this client</div></div><div class='badge low'>DENIED</div></div>"
+        f"<div class='why'>Checked against the consultant's client list before any search. No documents were "
+        f"read and nothing about the client was sent to the AI.</div></div>"
+    )
 
 
 # ---- rendering helpers ----------------------------------------------------
@@ -340,14 +375,6 @@ def _text(content) -> str:
     return content or ""
 
 
-def _as_list(v) -> list[str]:
-    if not v:
-        return []
-    if isinstance(v, list):
-        return [str(x).strip() for x in v if str(x).strip()]
-    return [x.strip() for x in str(v).replace(";", ",").split(",") if x.strip()]
-
-
 def _parse_date(v) -> Optional[date]:
     try:
         return datetime.fromisoformat(str(v)[:10]).date() if v else None
@@ -367,31 +394,48 @@ def _safe_url(url) -> bool:
     return isinstance(url, str) and url.startswith(("https://", "http://"))
 
 
-def _mock_response(client: dict) -> dict:
-    """Stand-in for the FastAPI backend so the UI can be built and demoed without it."""
+def _mock_response(consultant: dict) -> dict:
+    """Stand-in for the FastAPI backend (README demo scenario 1) so the UI works without it."""
     return {
+        "status": "answered",
         "answer": (
-            "Yes. Since 1 January 2026 the voluntary overtime cap for Belgian employees is **180 hours per year** "
-            "[1], and joint committee 118 follows the national rule without a sector-specific limit [2].\n\n"
-            "Note: a Teams message still mentions 120 hours [3]; that figure comes from the 2023 policy, which has since been replaced [4]."
+            "Pay the 4 hours of Saturday overtime at **175%** of the hourly rate: Brouwerij Delta NV's company "
+            "agreement overrides the Belgian legal rate of 150% for this entity [1][2]. The handover note flags this "
+            "special weekend rate too [3].\n\nA Teams chat still says 125% [5]; that figure comes from the outdated "
+            "2023 rules (v2) [4] and should not be used."
         ),
         "sources": [
-            {"id": "be-ot-2026", "title": "BE Overtime Policy 2026", "doc_type": "policy", "country": "BE",
-             "joint_committees": "ALL", "owner": "Payroll BE Team", "expert": "An Claes (Payroll BE Team)",
-             "updated": "2026-07-15", "excerpt": "The voluntary overtime cap is 180 hours per calendar year."},
-            {"id": "jc118-annex", "title": "Joint Committee 118 Annex", "doc_type": "annex", "country": "BE",
-             "joint_committees": "118", "owner": "Sector Desk Food", "updated": "2026-03-02",
-             "excerpt": "JC 118 applies the national overtime rules; no sector-specific cap."},
-            {"id": "teams-ot", "title": "Teams export: #payroll-be (12 Mar 2025)", "doc_type": "chat", "country": "BE",
-             "owner": "", "updated": "2025-03-12", "excerpt": "overtime cap is still 120h, don't change the configs"},
-            {"id": "be-ot-2023", "title": "BE Overtime Policy 2023", "doc_type": "policy", "country": "BE",
-             "owner": "Payroll BE Team", "updated": "2023-02-10", "superseded_by": "BE Overtime Policy 2026",
-             "excerpt": "The voluntary overtime cap is 120 hours per calendar year."},
-            {"id": "nl-ot", "title": "NL Overtime Guidelines", "doc_type": "policy", "country": "NL",
-             "owner": "Payroll NL Team", "updated": "2026-05-20", "excerpt": "Overtime is governed by the applicable CAO."},
+            {"id": "CL-10045-BE-001", "title": "Company Agreement Overtime - Brouwerij Delta NV (BE) (v1)",
+             "doc_type": "agreement", "layer": "client", "country": "BE", "entity": "Brouwerij Delta NV",
+             "owner": "Nina Claes (Account Team Antwerp)", "owner_status": "active", "updated": "2026-04-02",
+             "overrides": "Overtime Rules Belgium (legal summary) (v3)",
+             "excerpt": "Weekend overtime (Saturday and Sunday) is paid at 175% of the hourly rate."},
+            {"id": "BE-TIME-001", "title": "Overtime Rules Belgium (legal summary) (v3)", "doc_type": "policy",
+             "layer": "legal", "country": "BE", "owner": "Sarah Janssens (Payroll Compliance BE)",
+             "owner_status": "active", "updated": "2026-06-15",
+             "excerpt": "Overtime on weekdays and Saturdays is paid at 150% of the hourly rate."},
+            {"id": "CL-10045-HANDOVER", "title": "Portfolio Handover Note - Brouwerij Delta (v1)", "doc_type": "handover",
+             "layer": "client", "country": "ALL", "owner": "Pieter Lambrecht", "owner_status": "moved_team",
+             "updated": "2026-09-01",
+             "excerpt": "Watch out: weekend overtime in Belgium has a special client rate - see the BE agreement."},
+            {"id": "BE-TIME-002", "title": "Overtime Rules Belgium (legal summary) (v2)", "doc_type": "policy",
+             "layer": "legal", "country": "BE", "owner": "Tom Peeters", "owner_status": "left", "updated": "2023-02-10",
+             "superseded_by": "Overtime Rules Belgium (legal summary) (v3)",
+             "excerpt": "Overtime on weekdays and Saturdays is paid at 125% of the hourly rate."},
+            {"id": "INF-TEAMS-001", "title": "Teams chat export - #payroll-be-questions", "doc_type": "chat",
+             "layer": "informal", "country": "BE", "owner": "", "owner_status": "none", "updated": "2025-11-20",
+             "excerpt": "Lucas: Saturday overtime for BE clients is still 125%, I checked last year."},
+            {"id": "CL-10045-NL-001", "title": "Company Agreement Overtime - Brouwerij Delta B.V. (NL) (v1)",
+             "doc_type": "agreement", "layer": "client", "country": "NL", "entity": "Brouwerij Delta B.V.",
+             "owner": "Sanne Bakker (HR NL)", "owner_status": "active", "updated": "2026-02-15",
+             "excerpt": "Saturday overtime is paid at 150% of the hourly rate."},
         ],
         "conflicts": [
-            {"a": "be-ot-2026", "b": "teams-ot", "topic": "overtime cap",
-             "a_says": "cap of 180 hours per calendar year", "b_says": "overtime cap is still 120h"},
+            {"a": "CL-10045-BE-001", "b": "INF-TEAMS-001", "topic": "Saturday overtime rate",
+             "a_says": "Weekend overtime ... is paid at 175%", "b_says": "Saturday overtime for BE clients is still 125%"},
         ],
+        "context": {"consultant": consultant.get("name"), "client": "Brouwerij Delta", "client_id": "CL-10045",
+                    "entity": "Brouwerij Delta NV", "country": "BE", "sector": "PC 118"},
+        "expert": "Sarah Janssens (Overtime and working time)",
+        "model": "mock",
     }

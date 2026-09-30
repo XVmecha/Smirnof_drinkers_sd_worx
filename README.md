@@ -1,14 +1,87 @@
-# Smirnof_drinkers_sd_worx
+# Trusted Answers for Payroll Consultants (Tectonic Hackathon - SD Worx track)
 
-Placeholder deployment of [Open WebUI](https://openwebui.com/), a self-hosted chat UI that can connect to local models (Ollama) or OpenAI-compatible APIs.
+An agent that helps an SD Worx payroll consultant answer urgent questions from
+country-based HR, Payroll and Time documents - and shows a **trust card** explaining
+*why* the answer can be relied on.
 
-Stripped down for the hackathon: no login, no secret key, no required config, and a few unused features turned off (see `docker-compose.yml`).
+> All documents in `/data` are **fictional demo data**. They are not real SD Worx
+> policies and not legal advice.
 
-## Quick start
+## The problem
+Knowledge is scattered across policies, FAQs, client agreements and chats. A consultant
+can find information but still not know if it is current, applies to this country and
+client, or conflicts with something else.
+
+## What it does
+The consultant asks a question. The agent:
+1. Detects country, domain (HR / Payroll / Time) and client.
+2. Filters `data/catalog.json` to the relevant documents.
+3. Reads the PDFs and answers.
+4. Shows a trust card: source, freshness, owner, overrides, conflicts, excluded documents,
+   confidence, and who to ask.
+
+## Flow
+Customer HR asks the consultant -> consultant asks the agent -> agent checks access,
+searches only allowed documents -> answer + trust card -> consultant decides what to tell
+the customer. The agent never talks to the customer directly.
+
+## Data structure
+```
+data/
+  catalog.json                          metadata for every document (agent reads this first)
+  users.json                            which consultant may see which clients
+  knowledge/                            country knowledge - visible to all consultants
+    BE/  HR/ Payroll/ Time/ Sector/PC-118/
+    NL/  HR/ Payroll/ Time/ Sector/CAO-Levensmiddelen/
+  clients/                              visible ONLY to assigned consultants
+    CL-10045_brouwerij-delta/           profile, handover note
+      BE/Agreements/                    Brouwerij Delta NV
+      NL/Agreements/                    Brouwerij Delta B.V.
+    CL-20318_havenlink-logistics/       profile
+      BE/Agreements/                    Havenlink Logistics NV
+  informal/
+    teams/                              chat exports - lowest trust
+    uploads/                            unverified notes (includes a prompt-injection test)
+  shared/                               expert directory
+```
+File naming: `COUNTRY_DOMAIN_LAYER_Title_version_date.pdf` (client files start with the client ID).
+
+**Precedence (simplified for the demo):** legal -> sector -> provider -> client.
+The most specific active document wins; a client agreement overrides the country rule for
+that client entity only. Informal sources never beat a document - they are shown as conflicts.
+
+Key catalog fields: `layer`, `client_id`, `entity`, `supersedes`, `overrides`,
+`owner_status` (active / left / moved_team / none), `source_type`, `status`, `security_test`.
+
+Regenerate PDFs, catalog and users after editing: `pip install reportlab && python scripts/build_data.py`
+
+## Access control (done in code, before the AI sees anything)
+1. Identity comes from the login/session - never from the question text.
+2. Determine the client (ask if unclear).
+3. Check the client is in the consultant's `clients` list in `users.json`. If not: refuse, log, reveal nothing.
+4. Build the allowed set: `knowledge/` + `shared/` + `informal/` + only the consultant's own `clients/` folders.
+5. Only then search and answer. Document text is treated as data, never as instructions.
+
+## Demo scenarios
+| # | Logged in as | Question | Expected |
+|---|---|---|---|
+| 1 | Emma | Brouwerij Delta, Belgium, 4h Saturday overtime - which rate? | 175% (client agreement); v2 outdated, NL docs excluded, Teams chat (125%) flagged, handover note cited |
+| 2 | Emma | Same, for the Dutch entity | 150% (NL client agreement) |
+| 3 | Emma | Sunday that is also a public holiday, Belgium | 200% |
+| 4 | Emma | Meal voucher value in Belgium | EUR 10; FAQ (EUR 8) flagged as outdated; uploaded note flagged as suspicious and ignored |
+| 5 | Emma | Home-working allowance in Belgium | Low confidence: draft, no owner, no expert -> escalate |
+| 6 | Emma | Company car taxation | Not found -> says so, suggests who to ask, does not guess |
+| 7 | Emma | "Saturday overtime rate?" (no client) | Asks which client / entity |
+| 8 | Emma | Havenlink Logistics Saturday overtime | Access denied |
+| 9 | Lucas | Havenlink Logistics Saturday overtime | 160% (client agreement) |
+
+## How to run
+
+### Quick start
 
 Requires Docker with Compose.
 
-### macOS without Docker Desktop (Colima)
+#### macOS without Docker Desktop (Colima)
 
 ```bash
 brew install colima docker docker-compose
@@ -21,7 +94,7 @@ docker compose version   # should print a version
 
 Colima has to be running (`colima start`) whenever you use Docker. Stop it with `colima stop`.
 
-### Run it
+#### Run it
 
 ```bash
 make up        # or: docker compose up -d
@@ -35,9 +108,9 @@ No `.env` is required. Copy `.env.example` to `.env` only to change the port, na
 
 If you already ran it with login enabled, wipe the data volume once so no-auth mode can start: `make reset`.
 
-## Payroll Assistant + trust card
+### Payroll Assistant + trust card
 
-`functions/payroll_assistant.py` is an Open WebUI *pipe* function. It adds one model per client to the dropdown ("Payroll Assistant · Brouwerij Janssens NV (BE)"), sends the question to our FastAPI backend, and shows the answer with a **trust card** underneath: main source, freshness, owner, country/client fit, conflicts side by side, excluded sources and who to ask.
+`functions/payroll_assistant.py` is an Open WebUI *pipe* function. It adds one model per consultant (from `data/users.json`) to the dropdown ("Payroll Assistant · Emma Wouters"), sends the question to our FastAPI backend, and shows the answer with a **trust card** underneath: main source, freshness, owner, country/client fit, conflicts side by side, excluded sources and who to ask.
 
 Install or update it after starting the stack (and after every edit to the file):
 
@@ -54,7 +127,7 @@ TRUST_API_URL=http://host.docker.internal:8000/ask
 
 The request/response contract for the backend is at the top of `functions/payroll_assistant.py`. The trust score is computed from the source metadata with fixed rules (see `assess_source`), so every point on the card can be explained.
 
-## Voice
+### Voice
 
 Works out of the box with no keys:
 
@@ -80,13 +153,15 @@ make logs | grep '\[voice\]'
 
 The browser only allows the mic on `localhost` or HTTPS, so open the app via http://localhost:3000, not an IP address.
 
-## Backend (FastAPI `/ask`)
+### Backend (FastAPI `/ask`)
 
-`backend/` is a small FastAPI service that runs next to Open WebUI in `docker-compose.yml`:
+`backend/` runs next to Open WebUI in `docker-compose.yml` and implements the flow above:
 
-1. BM25 search over `docs/` (`.pdf`, `.md`, `.txt`). The index rebuilds itself when files change.
-2. Trust metadata per file comes from `docs/metadata.json` (title, doc_type, country, joint_committees, owner, expert, updated, superseded_by).
-3. Gemini writes the answer with `[n]` citations and flags conflicting sources.
+1. The consultant comes from the selected model in Open WebUI ("Payroll Assistant · Emma Wouters"), standing in for the login session. The client and country are detected from the question (and earlier turns for follow-ups).
+2. Access check against `data/users.json` **before** any search: a client that isn't in the consultant's list returns "access denied" and nothing is read.
+3. BM25 search over the allowed set only (`knowledge/`, `shared/`, `informal/`, and the consultant's own client folder), with metadata from `data/catalog.json`.
+4. Documents flagged as prompt injection (`security_test` or suspicious text) are never sent to the LLM; the card lists them as excluded.
+5. The LLM writes the answer with `[n]` citations, following the precedence rules, and flags conflicts. Client-agreement overrides are not counted as conflicts.
 
 Setup: put your keys in `.env` (Gemini from https://aistudio.google.com, Groq from https://console.groq.com/keys; either one alone works):
 
@@ -95,11 +170,11 @@ GEMINI_API_KEY=...
 GROQ_API_KEY=...
 ```
 
-then `make restart`. Test it without the UI: `make ask Q="Does the new overtime rule apply to this client?"`. Health check: http://127.0.0.1:8000/health.
+then `make restart` and `make functions`. Test without the UI: `make ask Q="Brouwerij Delta, Belgium, 4h Saturday overtime - which rate?" AS=U-001`. Health check: http://127.0.0.1:8000/health.
 
-Documents live in the bucket `gs://qwiklabs-gcp-02-19c5a9bec7a3-payroll-docs`: `make docs-pull` downloads them into `docs/`, `make docs-push` uploads local changes. `docs/` ships with six sample Markdown docs containing the planted problems (outdated, wrong country, conflicting chat message).
+The data can also live in the bucket `gs://qwiklabs-gcp-02-19c5a9bec7a3-payroll-docs`: `make docs-pull` / `make docs-push` sync it with `data/`.
 
-### LLM providers: Gemini first, Groq as backup
+#### LLM providers: Gemini first, Groq as backup
 
 The backend tries a chain of models and uses the first one that answers:
 
@@ -116,18 +191,18 @@ A model is skipped when it is overloaded (503), rate limited (429), retired (404
 
 Keys go in `.env` (`GEMINI_API_KEY`, `GROQ_API_KEY`); either one alone is enough. If Gemini is unreliable on demo day, set `LLM_ORDER=groq,gemini` and `make restart` to skip the wait on failing Gemini calls. `GET /health` lists the active chain.
 
-## Connecting a model directly
+### Connecting a model directly
 
 - **Ollama (recommended on a Mac):** install Ollama natively (`brew install ollama`, then `ollama serve` and `ollama pull llama3.2`). Running it natively uses the Mac GPU; inside Docker it would be CPU-only and slow. Open WebUI reaches it via `host.docker.internal:11434`.
 - **OpenAI-compatible API:** set `OPENAI_API_KEY` in `.env`, then `make restart`.
 
-## Configuration
+### Configuration
 
 `docker-compose.yml` is the source of truth. `ENABLE_PERSISTENT_CONFIG=False` means env vars always win, and changes made in *Admin Settings* are lost on restart. To change something for everyone, edit `docker-compose.yml` (or your `.env`) and run `make restart`.
 
 All options: https://docs.openwebui.com/reference/env-configuration
 
-## Common commands
+### Common commands
 
 ```bash
 make up        # start
@@ -137,3 +212,13 @@ make functions # install/update functions/*.py
 make down      # stop (data volume is kept)
 make reset     # wipe chats/settings and start fresh
 ```
+
+## Security
+No secrets in the repo (`.env` is git-ignored; see `.env.example`). Aikido scan
+screenshots are included in the submission.
+
+## Unfinished / next steps
+_TODO_
+
+## Team
+_TODO_

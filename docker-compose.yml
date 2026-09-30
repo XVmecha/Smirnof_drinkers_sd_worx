@@ -29,7 +29,7 @@ services:
       # Set TRUST_API_URL= (empty) in .env to use the built-in mock data instead.
       TRUST_API_URL: ${TRUST_API_URL-http://backend:8000/ask}
       TRUST_API_TOKEN: ${TRUST_API_TOKEN:-}
-      DEFAULT_MODELS: ${DEFAULT_MODELS:-payroll_assistant.janssens}
+      DEFAULT_MODELS: ${DEFAULT_MODELS:-payroll_assistant.u-001}
       # No direct model connections: the only models are the Payroll Assistant
       # entries. Flip these on to also chat with Ollama/OpenAI models directly.
       ENABLE_OLLAMA_API: ${ENABLE_OLLAMA_API:-False}
@@ -66,7 +66,7 @@ services:
       - backend
     restart: unless-stopped
 
-  # FastAPI /ask: BM25 search over ./docs + Gemini. See backend/app/main.py.
+  # FastAPI /ask: access check + BM25 search over ./data + Gemini/Groq. See backend/app/main.py.
   backend:
     build: ./backend
     container_name: payroll-backend
@@ -74,7 +74,7 @@ services:
     ports:
       - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
     volumes:
-      - ./docs:/docs:ro
+      - ./data:/data:ro
       - ./backend/app:/srv/app:ro
     # --reload picks up code edits in backend/app without a rebuild.
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
@@ -90,8 +90,8 @@ services:
       GROQ_API_KEY: ${GROQ_API_KEY:-}
       GROQ_MODELS: ${GROQ_MODELS:-openai/gpt-oss-120b,qwen/qwen3.8-27b,openai/gpt-oss-20b}
       TRUST_API_TOKEN: ${TRUST_API_TOKEN:-}
-      DOCS_DIR: /docs
-      TOP_K: ${TOP_K:-6}
+      DATA_DIR: /data
+      TOP_K: ${TOP_K:-8}
     restart: unless-stopped
 
 volumes:

@@ -27,13 +27,13 @@ pull:      ## pull the image for the pinned version
 functions: ## install/update functions/*.py into Open WebUI
 	docker compose exec open-webui python /app/hackathon/scripts/install_functions.py
 
-docs-pull: ## download PDFs + metadata.json from the GCS bucket into ./docs
-	gcloud storage rsync gs://$(DOCS_BUCKET) docs
+docs-pull: ## download data/ from the GCS bucket
+	gcloud storage rsync --recursive gs://$(DOCS_BUCKET) data
 
-docs-push: ## upload ./docs to the GCS bucket
-	gcloud storage rsync docs gs://$(DOCS_BUCKET)
+docs-push: ## upload data/ to the GCS bucket
+	gcloud storage rsync --recursive data gs://$(DOCS_BUCKET)
 
-ask:       ## smoke-test the backend: make ask Q="does the overtime rule apply?"
+ask:       ## smoke-test the backend: make ask Q="..." AS=U-001
 	@curl -s -X POST http://127.0.0.1:$${BACKEND_PORT:-8000}/ask -H 'Content-Type: application/json' \
-	  -d '{"question": "$(or $(Q),Does the new overtime rule apply to this client?)", "client": {"id": "janssens", "name": "Brouwerij Janssens NV", "country": "BE", "joint_committee": "118"}}' \
+	  -d '{"question": "$(or $(Q),Brouwerij Delta, Belgium, 4h Saturday overtime - which rate?)", "consultant_id": "$(or $(AS),U-001)"}' \
 	  | python3 -m json.tool
