@@ -1,0 +1,17 @@
+# Placeholder Open WebUI deployment (https://docs.openwebui.com)
+services:
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: open-webui
+    ports:
+      - "${OPEN_WEBUI_PORT:-3000}:8080"
+    volumes:
+      - open-webui:/app/backend/data
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    env_file:
+      - .env
+    restart: unless-stopped
+
+volumes:
+  open-webui:
