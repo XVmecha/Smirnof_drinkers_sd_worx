@@ -72,6 +72,12 @@ AUDIO_TTS_VOICE=21m00Tcm4TlvDq8ikWAM   # voice ID, from the ElevenLabs Voices pa
 
 Then `make restart`. OpenAI, Azure and Mistral also work via `AUDIO_TTS_ENGINE`; see the [env reference](https://docs.openwebui.com/reference/env-configuration).
 
+ElevenLabs is optional. On startup, `scripts/start.py` checks it and falls back to browser voices if the key is missing, rejected, or ElevenLabs can't be reached, so the app always starts and the speaker button keeps working. It also swaps in a valid voice if `AUDIO_TTS_VOICE` isn't in your account. See what it decided with:
+
+```bash
+make logs | grep '\[voice\]'
+```
+
 The browser only allows the mic on `localhost` or HTTPS, so open the app via http://localhost:3000, not an IP address.
 
 ## Connecting a model directly

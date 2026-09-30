@@ -5,6 +5,9 @@ services:
     # Pinned so the whole team runs the same version; bump deliberately.
     image: ghcr.io/open-webui/open-webui:${OPEN_WEBUI_VERSION:-v0.11.4}
     container_name: open-webui
+    # Checks the voice config (falls back to browser voices if ElevenLabs
+    # isn't usable), then runs the image's normal start.sh.
+    command: ["python", "/app/hackathon/scripts/start.py"]
     ports:
       - "${OPEN_WEBUI_PORT:-3000}:8080"
     volumes:
@@ -40,6 +43,7 @@ services:
       AUDIO_TTS_API_KEY: ${AUDIO_TTS_API_KEY:-}
       AUDIO_TTS_MODEL: ${AUDIO_TTS_MODEL:-tts-1}
       AUDIO_TTS_VOICE: ${AUDIO_TTS_VOICE:-alloy}
+      ELEVENLABS_API_BASE_URL: ${ELEVENLABS_API_BASE_URL:-https://api.elevenlabs.io}
       # Speech-to-text: "" runs Whisper locally in the container (CPU, no key).
       AUDIO_STT_ENGINE: ${AUDIO_STT_ENGINE:-}
       WHISPER_MODEL: ${WHISPER_MODEL:-base}
