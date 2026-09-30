@@ -2,21 +2,26 @@
 
 Flow (README "Access control"): identify the consultant, determine the client,
 check access, build the allowed document set, and only then search and ask the
-LLM. Request/response contract: see the header of functions/payroll_assistant.py.
+LLM. Code decides which documents the model sees and which facts (flags) are
+attached to each; the model only ranks them and says what stands out (relevance.py).
+Request/response contract: see the header of functions/payroll_assistant.py.
 """
 
 import hmac
 import logging
 import os
 import re
+from datetime import date
 from pathlib import Path
 from typing import Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
-from .knowledge import Hit, KnowledgeBase
+from .catalog import scope
+from .knowledge import KnowledgeBase
 from .llm import LLM, Provider
+from .relevance import prepare
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("payroll-trust")
@@ -56,7 +61,7 @@ def build_providers() -> list[Provider]:
             env_list("GROQ_MODELS", "openai/gpt-oss-120b,qwen/qwen3.8-27b,openai/gpt-oss-20b"),
             TIMEOUT,
         )
-    return [available[name] for name in env_list("LLM_ORDER", "gemini,groq") if name in available]
+    return [available[name] for name in env_list("LLM_ORDER", "groq,gemini") if name in available]
 
 
 kb = KnowledgeBase(Path(os.environ.get("DATA_DIR", "/data")))
@@ -91,6 +96,12 @@ def detect_country(text: str) -> str | None:
     return found[0] if len(found) == 1 else None
 
 
+def detect_site(client: dict, text: str) -> str | None:
+    """The country of the one entity whose site the text names ("the Antwerp site" -> BE)."""
+    found = {e["country"] for e in client["entities"] if e.get("site") and re.search(rf"\b{re.escape(e['site'])}\b", text, re.I)}
+    return found.pop() if len(found) == 1 else None
+
+
 def detect_client(text: str) -> str | None:
     lowered = text.lower()
     for cid, client in kb.clients.items():
@@ -108,49 +119,21 @@ def latest(turns: list[str], detector):
 
 
 def reply(status: str, answer: str, context: dict, **extra) -> dict:
-    return {"status": status, "answer": answer, "sources": [], "conflicts": [], "context": context, **extra}
+    return {"status": status, "answer": answer, "sources": [], "notes": [], "context": context, **extra}
 
 
-# ---- trust metadata for the card --------------------------------------------
+# ---- documents for the card ------------------------------------------------
+
+# Catalog fields shown to the consultant exactly as stored (the prompt promises this). Not shown:
+# path (a storage detail), topics (search keywords) and security_test (an evaluation label).
+DISPLAY_FIELDS = ("id", "title", "layer", "country", "domain", "client_id", "entity", "source_type", "version",
+                  "status", "owner", "owner_status", "last_updated", "supersedes", "overrides")
 
 
-def doc_title(doc_id: str) -> str:
-    doc = kb.docs.get(doc_id)
-    if not doc:
-        return doc_id
-    return doc.meta["title"] + (f" (v{doc.meta['version']})" if doc.meta.get("version") else "")
-
-
-def exclude_reasons(hit: Hit, client: dict | None, country: str | None) -> list[str]:
-    """Reasons the pipe can't derive from the metadata alone (it handles country and superseded itself)."""
-    m, reasons = hit.doc.meta, []
-    if hit.doc.suspicious:
-        reasons.append("Suspicious content (possible prompt injection): not shown to the AI")
-    if m.get("sector") and client and country:
-        entity = next((e for e in client["entities"] if e["country"] == country), None)
-        if entity and entity["sector"].replace(" ", "").lower() != m["sector"].replace(" ", "").lower():
-            reasons.append(f"Sector {m['sector']} does not apply ({entity['name']} is {entity['sector']})")
-    return reasons
-
-
-def to_source(hit: Hit, client: dict | None, country: str | None) -> dict:
-    m = hit.doc.meta
-    source = {
-        "id": hit.doc.id,
-        "title": doc_title(hit.doc.id),
-        "doc_type": "draft" if m.get("status") == "draft" else m.get("source_type"),
-        "layer": m.get("layer"),
-        "country": m.get("country"),
-        "client_id": m.get("client_id"),
-        "entity": m.get("entity"),
-        "owner_status": m.get("owner_status"),
-        "updated": m.get("last_updated"),
-        "superseded_by": doc_title(kb.superseded_by[hit.doc.id]) if hit.doc.id in kb.superseded_by else None,
-        "overrides": doc_title(m["overrides"]) if m.get("overrides") else None,
-        "excerpt": "[content withheld: flagged as possible prompt injection]" if hit.doc.suspicious else hit.doc.text,
-        "exclude_reasons": exclude_reasons(hit, client, country),
-    }
-    return {"owner": m.get("owner") or "", **{k: v for k, v in source.items() if v not in (None, "", [])}}
+def to_source(doc_id: str, flags: list[str], group: str, note: str) -> dict:
+    doc = kb.docs[doc_id]
+    meta = {k: doc.meta[k] for k in DISPLAY_FIELDS if doc.meta.get(k) is not None}
+    return {**meta, "group": group, "flags": flags, "note": note, "excerpt": doc.text}
 
 
 # ---- endpoints --------------------------------------------------------------
@@ -185,16 +168,17 @@ async def ask(req: AskRequest) -> dict:
         return reply("denied", "You are not assigned to this client, so I can't search or share its documents. "
                      "Ask the account team if you need access.", {"consultant": consultant["name"]})
 
-    # 2. Country / entity. A client with one entity implies its country.
-    country = detect_country(req.question) or latest(turns[1:], detect_country)
+    # 2. Country / entity, from a country name or an entity's site. A client with one entity implies its country.
+    country = latest(turns, lambda t: detect_country(t) or (detect_site(client, t) if client else None))
     if client and not country and len(client["entities"]) == 1:
         country = client["entities"][0]["country"]
     entity = next((e for e in client["entities"] if e["country"] == country), None) if client else None
     context |= {"country": country, "entity": entity["name"] if entity else None,
                 "sector": entity["sector"] if entity else None}
 
-    # 3. Allowed set: country knowledge, shared, informal, and only this (permitted) client's folder.
-    allowed = {d.id for d in kb.docs.values() if not d.client_id or d.client_id == client_id}
+    # 3. Allowed set: general documents and only this (permitted) client's own (catalog.scope, the single access rule).
+    catalog = [d.meta for d in kb.docs.values()]
+    allowed = {d["id"] for d in scope(catalog, consultant, client_id)}
     query = " ".join([req.question, *(earlier[-1:] if client_id else [])])
     hits = kb.search(query, allowed, TOP_K)
 
@@ -209,28 +193,33 @@ async def ask(req: AskRequest) -> dict:
     if not client and not country:
         return reply("clarify", "Which client (and country) is this about? Rates can differ per client agreement.", context)
 
-    # 4. Suspicious documents never reach the LLM; they go last so [n] numbering stays aligned.
-    hits.sort(key=lambda h: h.doc.suspicious)
-    visible = [h for h in hits if not h.doc.suspicious]
-    best_topics = " ".join(visible[0].doc.meta.get("topics", [])) if visible else ""
+    # 4. Code decides the documents and their facts; the model ranks and describes them.
+    history = [m.model_dump() for m in req.messages if m.content != req.question][-6:]
+    prepared = prepare(catalog, consultant, client_id, client["name"] if client else "", req.question,
+                       {d.id: d.text for d in kb.docs.values()},
+                       context={"country": country, "entity": context["entity"], "domain": None},
+                       history=history, candidates=[h.doc.id for h in hits], today=date.today())
+    best_topics = " ".join(hits[0].doc.meta.get("topics", []))
     expert = kb.expert_for(country, f"{req.question} {best_topics}")
 
     if not llm.providers:
-        raise HTTPException(status_code=503, detail="No LLM configured: set GEMINI_API_KEY and/or GROQ_API_KEY")
-    history = [m.model_dump() for m in req.messages if m.content != req.question][-6:]
+        raise HTTPException(status_code=503, detail="No LLM configured: set GROQ_API_KEY and/or GEMINI_API_KEY")
     try:
-        result = await llm.answer(req.question, context, history, visible, kb.superseded_by)
+        result = await llm.describe(prepared.prompt, req.question, prepared.main, prepared.other)
     except Exception as e:
         log.exception("LLM call failed")
         raise HTTPException(status_code=502, detail=f"LLM call failed: {type(e).__name__}") from e
 
+    # Sources in citation order: [n] is the position in ranking, then other_country (see the prompt).
+    sources = [to_source(e["id"], prepared.flags[e["id"]], "ranking", e["notable"]) for e in result["ranking"]]
+    sources += [to_source(e["id"], prepared.flags[e["id"]], "other_country", e["notable"]) for e in result["other_country"]]
+    sources += [to_source(e["id"], prepared.flags[e["id"]], "suspicious", e["reason"]) for e in result["suspicious"]]
     return {
         "status": "answered",
-        "answer": result["answer"] or "The model returned no answer.",
-        "sources": [to_source(h, client, country) for h in hits],
-        # An override (client agreement vs the country rule it replaces) is intended, not a conflict.
-        "conflicts": [c for c in result["conflicts"]
-                      if kb.docs[c["a"]].meta.get("overrides") != c["b"] and kb.docs[c["b"]].meta.get("overrides") != c["a"]],
+        "answer": result["answer"] or "The model returned no summary.",
+        "sources": sources,
+        "notes": result["notes"],
+        "shown": prepared.main + prepared.other,  # every document the model was given, in prompt order
         "context": context,
         "expert": expert or FALLBACK_EXPERT,
         "model": result["model"],

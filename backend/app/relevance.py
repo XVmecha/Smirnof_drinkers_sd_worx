@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
@@ -24,7 +25,7 @@ explains why the document is notable.
 
 INPUT
 - Current date: {CURRENT_DATE}
-- Selected client (chosen by the consultant in the UI): {CLIENT}
+- Client (detected from the question and chat history): {CLIENT}
 - Context extracted from the question (fields may be null): {CONTEXT}
 - Earlier messages in this chat: {HISTORY}
   Use them only to resolve references such as "same question for Breda".
@@ -32,7 +33,7 @@ INPUT
 - Documents: {DOCUMENTS}
 - Other-country documents: {OTHER_COUNTRY}
 
-Apart from the selected client, only the question text and chat history are
+Apart from the client, only the question text and chat history are
 known. Never assume a country, entity or domain that is not stated there or
 in the context.
 
@@ -113,7 +114,7 @@ Return ONLY this JSON, no other text:
 The order of the arrays is the ranking.
 
 EXAMPLE
-Selected client: CL-10045 Brouwerij Delta
+Client: CL-10045 Brouwerij Delta
 Question: "Brouwerij Delta asks: an employee at the Antwerp site worked 4
 extra hours on Saturday. Which overtime rate applies?"
 Output:
@@ -146,14 +147,24 @@ def fill(values: dict[str, str]) -> str:
     return PLACEHOLDER.sub(lambda m: values[m.group(1)], PROMPT)
 
 
-def build_prompt(catalog: list[dict[str, Any]], consultant: dict[str, Any] | None, client_id: str, client_label: str,
-                 question: str, texts: dict[str, str], context: dict[str, Any] | None = None,
-                 history: list[dict[str, Any]] | None = None, candidates: list[str] | None = None,
-                 today: date | None = None) -> str:
-    """The full prompt text for one question. Raises `catalog.AccessDenied` before anything is read.
+@dataclass
+class Prepared:
+    """What the code decided for one question, and the prompt built from it."""
+    prompt: str
+    documents: list[dict[str, Any]]  # the scope, catalog entries as stored
+    flags: dict[str, list[str]]      # per document id, over the whole scope
+    main: list[str]                  # ids shown under "Documents", in catalog order
+    other: list[str]                 # ids shown under "Other-country documents"
+
+
+def prepare(catalog: list[dict[str, Any]], consultant: dict[str, Any] | None, client_id: str | None, client_label: str,
+            question: str, texts: dict[str, str], context: dict[str, Any] | None = None,
+            history: list[dict[str, Any]] | None = None, candidates: list[str] | None = None,
+            today: date | None = None) -> Prepared:
+    """Raises `catalog.AccessDenied` before anything is read.
 
     Every choice here is made by code from the catalog, so the same question gives the same documents and flags:
-    - scope: general documents plus the selected client's own (access);
+    - scope: general documents plus the client's own (access);
     - domain: when the context names one, only that domain plus client background documents are shown;
     - split: documents for another country or another entity than the context names go to the second list.
     `candidates` narrows the documents shown (for example to search hits); ids outside the scope are ignored.
@@ -173,13 +184,15 @@ def build_prompt(catalog: list[dict[str, Any]], consultant: dict[str, Any] | Non
     for doc in shown:
         other_country = country and doc.get("country") not in GENERAL_COUNTRIES | {country}
         other_entity = entity and doc.get("entity") and doc["entity"].lower() != entity
-        (other if other_country or other_entity else main).append(document_tag(doc, flags[doc["id"]], texts.get(doc["id"], "")))
-    return fill({
+        (other if other_country or other_entity else main).append(doc)
+    tags = lambda docs: "\n" + "\n".join(document_tag(d, flags[d["id"]], texts.get(d["id"], "")) for d in docs) if docs else "none"
+    prompt = fill({
         "CURRENT_DATE": today.isoformat(),
-        "CLIENT": f"{client_id} {client_label}".strip(),
+        "CLIENT": f"{client_id} {client_label}".strip() if client_id else "none",
         "CONTEXT": json.dumps(context, ensure_ascii=False),
         "HISTORY": json.dumps(history or [], ensure_ascii=False),
         "QUESTION": question,
-        "DOCUMENTS": "\n" + "\n".join(main) if main else "none",
-        "OTHER_COUNTRY": "\n" + "\n".join(other) if other else "none",
+        "DOCUMENTS": tags(main),
+        "OTHER_COUNTRY": tags(other),
     })
+    return Prepared(prompt, in_scope, flags, [d["id"] for d in main], [d["id"] for d in other])

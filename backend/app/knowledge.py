@@ -25,11 +25,6 @@ STOPWORDS = set(
 # Words too generic to count as a topic match on their own.
 GENERIC = {"company", "client", "agreement", "policy", "rule", "rules", "belgium", "netherlands", "rate", "new"}
 FOOTER = "FICTIONAL DEMO DATA"
-# Heuristic on top of the catalog's security_test flag: text that talks to the AI is never passed to it.
-INJECTION_RE = re.compile(
-    r"ignore (all )?(previous|prior|above) instructions|note to (the )?ai|system note|you are now|do not show any sources",
-    re.I,
-)
 
 
 def tokenize(text: str) -> list[str]:
@@ -52,7 +47,6 @@ def pdf_body(path: Path) -> str:
 class Doc:
     meta: dict
     text: str
-    suspicious: bool
 
     @property
     def id(self) -> str:
@@ -75,7 +69,7 @@ class KnowledgeBase:
     data_dir: Path
     docs: dict[str, Doc] = field(default_factory=dict)
     users: dict[str, dict] = field(default_factory=dict)
-    clients: dict[str, dict] = field(default_factory=dict)  # client_id -> {name, aliases, entities}
+    clients: dict[str, dict] = field(default_factory=dict)  # client_id -> {name, aliases, entities: [{country, name, site, sector}]}
     experts: list[tuple[str, str, str]] = field(default_factory=list)  # (country, topic, name)
     superseded_by: dict[str, str] = field(default_factory=dict)
     _order: list[str] = field(default_factory=list)
@@ -113,8 +107,7 @@ class KnowledgeBase:
             except Exception as e:  # one broken PDF must not take the index down
                 log.warning("skipping %s: %s", meta["id"], e)
                 continue
-            suspicious = bool(meta.get("security_test")) or bool(INJECTION_RE.search(text))
-            docs[meta["id"]] = Doc(meta=meta, text=text, suspicious=suspicious)
+            docs[meta["id"]] = Doc(meta=meta, text=text)
 
         self.docs = docs
         self.users = {u["id"]: u for u in users.get("consultants", [])}
@@ -142,10 +135,10 @@ class KnowledgeBase:
             if d.meta.get("source_type") == "profile":
                 c["name"] = d.meta["title"].split(" - ", 1)[-1]
                 c["aliases"].add(c["name"].lower())
-                for country, entity, sector in re.findall(
-                    r"Entity (\w{2}): (.+?) \(.*?\), sector ([^,]+),", d.text
+                for country, entity, site, sector in re.findall(
+                    r"Entity (\w{2}): (.+?) \((.*?)\), sector ([^,]+),", d.text
                 ):
-                    c["entities"].append({"country": country, "name": entity, "sector": sector.strip()})
+                    c["entities"].append({"country": country, "name": entity, "site": site.strip(), "sector": sector.strip()})
                     c["aliases"].add(entity.lower())
             # Folder slug: clients/CL-10045_brouwerij-delta/... -> "brouwerij delta"
             slug = d.meta["path"].split("/")[1].split("_", 1)[-1]

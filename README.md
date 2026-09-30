@@ -1,8 +1,14 @@
 # Trusted Answers for Payroll Consultants (Tectonic Hackathon - SD Worx track)
 
 An agent that helps an SD Worx payroll consultant answer urgent questions from
-country-based HR, Payroll and Time documents - and shows a **trust card** explaining
-*why* the answer can be relied on.
+country-based HR, Payroll and Time documents: it shows a **trust card** with the
+documents that apply, what is known about each, and which to read first.
+
+**The rules decide, the AI explains.** Code decides which documents the AI sees and
+which facts are attached to each (replaced, overridden, owner left, draft, informal,
+older than 2 years). The AI only ranks those documents and says what stands out. It
+does not answer the question: the consultant reads the sources and decides. The same
+question gives the same documents and facts every time.
 
 > All documents in `/data` are **fictional demo data**. They are not real SD Worx
 > policies and not legal advice.
@@ -14,15 +20,17 @@ client, or conflicts with something else.
 
 ## What it does
 The consultant asks a question. The agent:
-1. Detects country, domain (HR / Payroll / Time) and client.
-2. Filters `data/catalog.json` to the relevant documents.
-3. Reads the PDFs and answers.
-4. Shows a trust card: source, freshness, owner, overrides, conflicts, excluded documents,
-   confidence, and who to ask.
+1. Detects client, country and entity from the question (code).
+2. Checks access and keeps only documents the consultant may use for that client (code).
+3. Searches them and computes each document's facts from `data/catalog.json` (code).
+4. Asks the AI to rank the documents and note, per document, how its metadata affects its
+   relevance to the question.
+5. Shows a trust card: the ranking, the AI's notes, the facts as labels, each document's
+   metadata as stored, and who to ask.
 
 ## Flow
 Customer HR asks the consultant -> consultant asks the agent -> agent checks access,
-searches only allowed documents -> answer + trust card -> consultant decides what to tell
+searches only allowed documents -> ranked sources + trust card -> consultant decides what to tell
 the customer. The agent never talks to the customer directly.
 
 ## Data structure
@@ -63,6 +71,8 @@ Regenerate PDFs, catalog and users after editing: `pip install reportlab && pyth
 5. Only then search and answer. Document text is treated as data, never as instructions.
 
 ## Demo scenarios
+"Expected" is what the top-ranked documents state; the AI itself does not give the value.
+
 | # | Logged in as | Question | Expected |
 |---|---|---|---|
 | 1 | Emma | Brouwerij Delta, Belgium, 4h Saturday overtime - which rate? | 175% (client agreement); v2 outdated, NL docs excluded, Teams chat (125%) flagged, handover note cited |
@@ -110,7 +120,7 @@ If you already ran it with login enabled, wipe the data volume once so no-auth m
 
 ### Payroll Assistant + trust card
 
-`functions/payroll_assistant.py` is an Open WebUI *pipe* function. It adds one model per consultant (from `data/users.json`) to the dropdown ("Payroll Assistant · Emma Wouters"), sends the question to our FastAPI backend, and shows the answer with a **trust card** underneath: main source, freshness, owner, country/client fit, conflicts side by side, excluded sources and who to ask.
+`functions/payroll_assistant.py` is an Open WebUI *pipe* function. It adds one model per consultant (from `data/users.json`) to the dropdown ("Payroll Assistant · Emma Wouters"), sends the question to our FastAPI backend, and shows a short spoken summary with a **trust card** underneath: the documents ranked by relevance with the AI's note on each, the rule-computed facts as labels (replaced by, overrides, owner left, draft, informal, older than 2 years), documents for another country or entity, suspicious documents, and who to ask.
 
 Install or update it after starting the stack (and after every edit to the file):
 
@@ -125,7 +135,7 @@ With `TRUST_API_URL` unset, it uses built-in mock data so the UI can be demoed b
 TRUST_API_URL=http://host.docker.internal:8000/ask
 ```
 
-The request/response contract for the backend is at the top of `functions/payroll_assistant.py`. The trust score is computed from the source metadata with fixed rules (see `assess_source`), so every point on the card can be explained.
+The request/response contract for the backend is at the top of `functions/payroll_assistant.py`. The card marks which parts come from rules (labels, metadata) and which from the AI (order and notes).
 
 ### Voice
 
@@ -159,37 +169,37 @@ The browser only allows the mic on `localhost` or HTTPS, so open the app via htt
 
 1. The consultant comes from the selected model in Open WebUI ("Payroll Assistant · Emma Wouters"), standing in for the login session. The client and country are detected from the question (and earlier turns for follow-ups).
 2. Access check against `data/users.json` **before** any search: a client that isn't in the consultant's list returns "access denied" and nothing is read.
-3. BM25 search over the allowed set only (`knowledge/`, `shared/`, `informal/`, and the consultant's own client folder), with metadata from `data/catalog.json`.
-4. Documents flagged as prompt injection (`security_test` or suspicious text) are never sent to the LLM; the card lists them as excluded.
-5. The LLM writes the answer with `[n]` citations, following the precedence rules, and flags conflicts. Client-agreement overrides are not counted as conflicts.
+3. BM25 search over the allowed set only (`knowledge/`, `shared/`, `informal/`, and the consultant's own client folder).
+4. Code computes each document's facts from `data/catalog.json` (`backend/app/catalog.py`): replaced/replaces, overrides/overridden by, owner left/moved/none, draft, informal, older than 2 years. Links are computed within the allowed set only, so another client's documents never show up. Documents for another country or entity than the question go to a second list.
+5. One LLM call with the relevance prompt (`backend/app/relevance.py`) ranks the documents, notes what stands out in each and lists documents that try to instruct the AI as suspicious. The backend drops any document id the AI was not given. All documents are sent; none are withheld. See `backend/DESIGN.md`.
 
-Setup: put your keys in `.env` (Gemini from https://aistudio.google.com, Groq from https://console.groq.com/keys; either one alone works):
+Setup: put your keys in `.env` (Groq from https://console.groq.com/keys, Gemini from https://aistudio.google.com; either one alone works):
 
 ```bash
-GEMINI_API_KEY=...
 GROQ_API_KEY=...
+GEMINI_API_KEY=...
 ```
 
 then `make restart` and `make functions`. Test without the UI: `make ask Q="Brouwerij Delta, Belgium, 4h Saturday overtime - which rate?" AS=U-001`. Health check: http://127.0.0.1:8000/health.
 
 The data can also live in the bucket `gs://qwiklabs-gcp-02-19c5a9bec7a3-payroll-docs`: `make docs-pull` / `make docs-push` sync it with `data/`.
 
-#### LLM providers: Gemini first, Groq as backup
+#### LLM providers: Groq first, Gemini as backup
 
 The backend tries a chain of models and uses the first one that answers:
 
-1. Gemini: `gemini-3.8-flash`, then `gemini-flash-latest`, `gemini-3.5-flash`, `gemini-3.5-flash-lite`, `gemini-flash-lite-latest`
-2. Groq: `openai/gpt-oss-120b`, then `qwen/qwen3.8-27b`, `openai/gpt-oss-20b`
+1. Groq: `openai/gpt-oss-120b`, then `qwen/qwen3.8-27b`, `openai/gpt-oss-20b`
+2. Gemini: `gemini-3.8-flash`, then `gemini-flash-latest`, `gemini-3.5-flash`, `gemini-3.5-flash-lite`, `gemini-flash-lite-latest`
 
-A model is skipped when it is overloaded (503), rate limited (429), retired (404) or times out (`LLM_TIMEOUT_SECONDS`, default 20 s). A rejected key (401/403) skips the rest of that provider. The trust card shows which model answered ("Answered by gemini/gemini-3.5-flash"), so a fallback is never hidden.
+A model is skipped when it is overloaded (503), rate limited (429), retired (404) or times out (`LLM_TIMEOUT_SECONDS`, default 20 s). A rejected key (401/403) skips the rest of that provider. The trust card shows which model ranked the documents ("Ranked by groq/openai/gpt-oss-120b"), so a fallback is never hidden.
 
-**Why Gemini is primary.** Google Cloud is a hackathon partner, Gemini handles Dutch/French/English payroll text well, and it follows the JSON answer format reliably.
+**Why Groq is primary.** The free Gemini tier failed too often while building (below). Groq's `openai/gpt-oss-120b` is fast, follows the JSON format, and the AI's job is now smaller: it ranks and describes documents the rules already selected, it does not answer.
 
 **Why a backup at all.** We run on the free Gemini API tier. While building we hit all three failure modes within an hour: `gemini-2.5-flash` was closed to new users (404), `gemini-3.8-flash` returned "high demand" (503), and the per-minute free quota ran out (429). The Google Cloud project we were given could not help either: its org policy blocks every Vertex AI model and its Gemini API quota is 0. A live demo can't depend on one free endpoint.
 
-**Why Groq.** It has a free tier, it speaks the same OpenAI-compatible API (so it's the same code path, just a different base URL and key), it is fast, and it is a different company's infrastructure, so an outage or rate limit at Google doesn't affect it. Its open-weight models are a little weaker at spotting subtle conflicts than Gemini, which is why it is the backup and not the primary.
+**Why Groq.** It has a free tier, it speaks the same OpenAI-compatible API (so it's the same code path, just a different base URL and key), it is fast, and it is a different company's infrastructure, so an outage or rate limit at Google doesn't affect it. Gemini stays in the chain as the backup.
 
-Keys go in `.env` (`GEMINI_API_KEY`, `GROQ_API_KEY`); either one alone is enough. If Gemini is unreliable on demo day, set `LLM_ORDER=groq,gemini` and `make restart` to skip the wait on failing Gemini calls. `GET /health` lists the active chain.
+Keys go in `.env` (`GEMINI_API_KEY`, `GROQ_API_KEY`); either one alone is enough. To put Gemini first again, set `LLM_ORDER=gemini,groq` and `make restart`. `GET /health` lists the active chain.
 
 ### Connecting a model directly
 

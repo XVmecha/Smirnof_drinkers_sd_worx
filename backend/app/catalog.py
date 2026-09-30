@@ -8,9 +8,7 @@ Two rules keep data out of the prompt by construction:
 from __future__ import annotations
 
 import html
-import json
 from datetime import date
-from pathlib import Path
 from typing import Any
 
 TAG_FIELDS = ("id", "title", "layer", "country", "domain", "client_id", "entity",
@@ -25,15 +23,6 @@ class AccessDenied(Exception):
     """The consultant is unknown or not assigned to the selected client. Reveal nothing further."""
 
 
-def load_catalog(data_dir: Path) -> list[dict[str, Any]]:
-    return json.loads((data_dir / "catalog.json").read_text(encoding="utf-8"))["documents"]
-
-
-def load_consultants(data_dir: Path) -> dict[str, dict[str, Any]]:
-    users = json.loads((data_dir / "users.json").read_text(encoding="utf-8"))
-    return {c["id"]: c for c in users["consultants"]}
-
-
 def document_client(doc: dict[str, Any]) -> str | None:
     """The client a document belongs to: its client_id, else the `clients/<id>_<slug>/` folder it sits in."""
     if doc.get("client_id"):
@@ -44,14 +33,14 @@ def document_client(doc: dict[str, Any]) -> str | None:
     return None
 
 
-def scope(catalog: list[dict[str, Any]], consultant: dict[str, Any] | None, client_id: str) -> list[dict[str, Any]]:
+def scope(catalog: list[dict[str, Any]], consultant: dict[str, Any] | None, client_id: str | None) -> list[dict[str, Any]]:
     """Every document usable for this consultant working for this client: general ones plus that client's own.
 
-    Other clients' documents are left out even when the consultant may see them, so one client's rules never
-    show up as flags while working for another. A document under clients/ whose client cannot be determined
-    is left out (fail closed).
+    Without a client, only general documents. Other clients' documents are left out even when the consultant may see
+    them, so one client's rules never show up as flags while working for another. A document under clients/ whose
+    client cannot be determined is left out (fail closed).
     """
-    if consultant is None or client_id not in consultant.get("clients", []):
+    if consultant is None or (client_id is not None and client_id not in consultant.get("clients", [])):
         raise AccessDenied(client_id)
     kept = []
     for doc in catalog:
