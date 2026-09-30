@@ -25,9 +25,9 @@ services:
       # the UI (Admin Settings changes are reset on restart).
       ENABLE_PERSISTENT_CONFIG: "False"
 
-      # Answers come from our FastAPI backend via functions/payroll_assistant.py.
-      # Empty TRUST_API_URL = the function uses built-in mock data.
-      TRUST_API_URL: ${TRUST_API_URL:-}
+      # Answers come from the backend service below via functions/payroll_assistant.py.
+      # Set TRUST_API_URL= (empty) in .env to use the built-in mock data instead.
+      TRUST_API_URL: ${TRUST_API_URL-http://backend:8000/ask}
       TRUST_API_TOKEN: ${TRUST_API_TOKEN:-}
       DEFAULT_MODELS: ${DEFAULT_MODELS:-payroll_assistant.janssens}
       # No direct model connections: the only models are the Payroll Assistant
@@ -62,6 +62,36 @@ services:
       ENABLE_MESSAGE_RATING: "False"
       ENABLE_NOTES: "False"
       ENABLE_VERSION_UPDATE_CHECK: "False"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  # FastAPI /ask: BM25 search over ./docs + Gemini. See backend/app/main.py.
+  backend:
+    build: ./backend
+    container_name: payroll-backend
+    # Localhost only: Open WebUI reaches it on the internal network.
+    ports:
+      - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
+    volumes:
+      - ./docs:/docs:ro
+      - ./backend/app:/srv/app:ro
+    # --reload picks up code edits in backend/app without a rebuild.
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    environment:
+      # Providers are tried in LLM_ORDER; within a provider, models are tried in order.
+      # Gemini is primary, Groq is the backup (see README "LLM providers").
+      LLM_ORDER: ${LLM_ORDER:-gemini,groq}
+      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-20}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.8-flash}
+      GEMINI_FALLBACK_MODELS: ${GEMINI_FALLBACK_MODELS:-gemini-flash-latest,gemini-3.5-flash,gemini-3.5-flash-lite,gemini-flash-lite-latest}
+      GEMINI_BASE_URL: ${GEMINI_BASE_URL:-https://generativelanguage.googleapis.com/v1beta/openai/}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GROQ_MODELS: ${GROQ_MODELS:-openai/gpt-oss-120b,qwen/qwen3.8-27b,openai/gpt-oss-20b}
+      TRUST_API_TOKEN: ${TRUST_API_TOKEN:-}
+      DOCS_DIR: /docs
+      TOP_K: ${TOP_K:-6}
     restart: unless-stopped
 
 volumes:

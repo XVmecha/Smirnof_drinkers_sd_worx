@@ -38,6 +38,10 @@ INFORMAL_TYPES = {"chat", "email", "note"}
 UNREVIEWED_TYPES = {"draft", "faq"}
 
 
+class BackendError(Exception):
+    pass
+
+
 class Pipe:
     class Valves(BaseModel):
         TRUST_API_URL: str = Field(
@@ -82,6 +86,9 @@ class Pipe:
                 data = await self._call_backend(question, client, messages)
             else:
                 data = _mock_response(client)
+        except BackendError as e:
+            await _emit(__event_emitter__, "status", {"description": "Backend error", "done": True})
+            return f"⚠️ The knowledge backend returned an error: {e}"
         except Exception as e:
             await _emit(__event_emitter__, "status", {"description": "Backend unreachable", "done": True})
             return f"⚠️ Could not reach the knowledge backend: `{type(e).__name__}`. Is the FastAPI service running?"
@@ -129,7 +136,12 @@ class Pipe:
                 json={"question": question, "client": client, "messages": messages},
                 headers=headers,
             ) as resp:
-                resp.raise_for_status()
+                if resp.status >= 400:
+                    try:
+                        detail = (await resp.json()).get("detail")
+                    except (aiohttp.ContentTypeError, ValueError):
+                        detail = None
+                    raise BackendError(f"HTTP {resp.status}" + (f": {detail}" if isinstance(detail, str) else ""))
                 return await resp.json()
 
 
@@ -201,7 +213,9 @@ def build_trust_card(data: dict, client: dict, stale_after_days: int, fallback_e
         by_id[str(s.get("id") or i)] = s
     considered = [s for s in by_id.values() if not s["_a"]["excluded"]]
     excluded = [s for s in by_id.values() if s["_a"]["excluded"]]
-    conflicts = [c for c in (data.get("conflicts") or []) if str(c.get("a")) in by_id and str(c.get("b")) in by_id]
+    # Only conflicts between sources that both apply count; excluded ones are explained separately.
+    applicable = {k for k, s in by_id.items() if not s["_a"]["excluded"]}
+    conflicts = [c for c in (data.get("conflicts") or []) if str(c.get("a")) in applicable and str(c.get("b")) in applicable]
 
     best = max(considered, key=lambda s: s["_a"]["score"], default=None)
     reasons = []
@@ -260,6 +274,9 @@ def build_trust_card(data: dict, client: dict, stale_after_days: int, fallback_e
         expert = (best or {}).get("expert") or (best or {}).get("owner") or fallback_expert
         parts.append(f"<div class='sec ask'><div class='k'>Not sure? Ask</div><div>🙋 {e(expert)}</div></div>")
 
+    if data.get("model"):
+        parts.append(f"<div class='foot muted'>Answered by {e(str(data['model']))}</div>")
+
     parts.append("</div>")
     return _page("".join(parts))
 
@@ -302,7 +319,7 @@ th{font-weight:500;color:var(--muted);white-space:nowrap}.ok{color:var(--ok)}.x{
 @media (max-width:560px){.cols{grid-template-columns:1fr}}
 .side{background:var(--soft);border-radius:10px;padding:8px 10px}blockquote{margin:4px 0;padding-left:8px;border-left:3px solid var(--warn)}
 .hint{margin-top:6px}ul{margin:6px 0 0;padding-left:0;list-style:none}li{margin:3px 0}summary{cursor:pointer}
-a{color:inherit}.ask div:last-child{font-weight:600;margin-top:2px}
+a{color:inherit}.foot{font-size:11px;margin-top:10px}.ask div:last-child{font-weight:600;margin-top:2px}
 </style></head><body>""" + body + """<script>
 const post=()=>parent.postMessage({type:'iframe:height',height:document.documentElement.scrollHeight},'*');
 new ResizeObserver(post).observe(document.body);addEventListener('load',post);document.querySelectorAll('details').forEach(d=>d.addEventListener('toggle',post));
