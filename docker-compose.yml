@@ -66,7 +66,7 @@ services:
       - backend
     restart: unless-stopped
 
-  # FastAPI /ask: access check + BM25 search over ./data + Gemini/Groq. See backend/app/main.py.
+  # FastAPI /ask: access check, BM25 search over ./data, rule-computed facts, one Groq/Gemini ranking call. See backend/DESIGN.md.
   backend:
     build: ./backend
     container_name: payroll-backend
@@ -80,8 +80,8 @@ services:
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
     environment:
       # Providers are tried in LLM_ORDER; within a provider, models are tried in order.
-      # Gemini is primary, Groq is the backup (see README "LLM providers").
-      LLM_ORDER: ${LLM_ORDER:-gemini,groq}
+      # Groq is primary, Gemini is the backup (see README "LLM providers").
+      LLM_ORDER: ${LLM_ORDER:-groq,gemini}
       LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-20}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.8-flash}
