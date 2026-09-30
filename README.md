@@ -6,6 +6,21 @@ Placeholder deployment of [Open WebUI](https://openwebui.com/), a self-hosted ch
 
 Requires Docker with Compose.
 
+### macOS without Docker Desktop (Colima)
+
+```bash
+brew install colima docker docker-compose
+mkdir -p ~/.docker
+# let the docker CLI find the Homebrew compose plugin (merge by hand if config.json already exists)
+[ -f ~/.docker/config.json ] || echo '{"cliPluginsExtraDirs": ["'"$(brew --prefix)"'/lib/docker/cli-plugins"]}' > ~/.docker/config.json
+colima start --cpu 2 --memory 4
+docker compose version   # should print a version
+```
+
+Colima has to be running (`colima start`) whenever you use Docker. Stop it with `colima stop`.
+
+### Run it
+
 ```bash
 cp .env.example .env
 # set WEBUI_SECRET_KEY, e.g. with: openssl rand -hex 32
